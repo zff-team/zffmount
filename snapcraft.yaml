@@ -1,0 +1,28 @@
+name: zffmount
+adopt-info: zffmount
+summary: Tool to fuse-mount zff files.
+description: |
+  zffmount is a tool to mount zff files with FUSE.
+
+  Zff (Z forensic file format) is a completley new designed file format to store and handle the contents and structure 
+  of a partial or entire disk image or physical memory. The focus of zff is on speed, security and modularity in concert 
+  with forensic requirements. The modular design promises high maintainability and scalability. Zff is an alternative 
+  to the ewf and aff file formats and is not compatible with them.
+base: core20
+confinement: strict
+parts:
+  zffmount:
+    build-packages: [ gcc, fuse3, libfuse-dev, pkg-config ]
+    plugin: rust
+    source: https://github.com/ph0llux/zffmount.git
+    override-pull: |
+      snapcraftctl pull
+      VERSION="$(git describe --tags --abbrev=0)"
+      [ -n "$(echo $VERSION)" ] && GRADE=stable
+      snapcraftctl set-version "$VERSION"
+      snapcraftctl set-grade "$GRADE"
+apps:
+  zffmount:
+    command: bin/zffmount
+architectures:
+  - build-on: [amd64,arm64]
