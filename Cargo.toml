@@ -19,7 +19,7 @@ ctrlc = "3.2.1"
 crossbeam-channel = "0.5.1"
 fuser = "0.9.1"
 libc = "0.2.102"
-zff = { path = "../zff", version = "0.10" }
+zff = { version = "0.10.1" }
 nix = "0.23"
 walkdir = "2.3.2"
 #serializing crates
