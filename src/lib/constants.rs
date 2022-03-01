@@ -4,38 +4,13 @@ use std::time::{Duration, UNIX_EPOCH};
 // - external
 use fuser::{FileAttr, FileType};
 
-pub(crate) const PROGRAM_NAME: &str = env!("CARGO_BIN_NAME");
-pub(crate) const PROGRAM_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub(crate) const PROGRAM_AUTHOR: &str = env!("CARGO_PKG_AUTHORS");
-pub(crate) const PROGRAM_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
-
-// clap
-// - args
-pub(crate) const CLAP_ARG_NAME_INPUT_FILE: &str = "INPUT_FILE";
-pub(crate) const CLAP_ARG_HELP_INPUT_FILE: &str = "The input file. This should be your device to dump.";
-pub(crate) const CLAP_ARG_SHORT_INPUT_FILE: &str = "i";
-pub(crate) const CLAP_ARG_LONG_INPUT_FILE: &str = "inputfile";
-
-pub(crate) const CLAP_ARG_NAME_MOUNT_DIR: &str = "MOUNT_DIR";
-pub(crate) const CLAP_ARG_HELP_MOUNT_DIR: &str = "Directory, where the file(s) are be mounted to.";
-pub(crate) const CLAP_ARG_SHORT_MOUNT_DIR: &str = "m";
-pub(crate) const CLAP_ARG_LONG_MOUNT_DIR: &str = "mount-dir";
-
-pub(crate) const CLAP_ARG_NAME_PASSWORD: &str = "PASSWORD";
-pub(crate) const CLAP_ARG_HELP_PASSWORD: &str = "The password to decrypt an encrypted zff file.";
-pub(crate) const CLAP_ARG_SHORT_PASSWORD: &str = "p";
-pub(crate) const CLAP_ARG_LONG_PASSWORD: &str = "password";
-
 // - errors
-pub(crate) const ERROR_OPEN_INPUT_FILE: &str = "An error occurred while trying to open the input file: ";
-pub(crate) const ERROR_SERIALIZE_METADATA: &str = "Could not serialize the metadata of the main header.";
-pub(crate) const ERROR_CREATE_ZFFFS: &str = "Error occurred while trying to create the Zff-fs: ";
-pub(crate) const ERROR_MOUNT_ZFFFS: &str = "Error occurred while trying to mount the file(s): ";
-pub(crate) const ERROR_ZFFFS_READ_SEEK: &str = "Could not read data at given offset.";
-pub(crate) const ERROR_ZFFFS_READ_READ: &str = "An I/O error has occurred: ";
-pub(crate) const ERROR_MISSING_ENCRYPTION_KEY: &str = "Zff file(s) are encrypted: You should enter the password by using the -p argument.";
-pub(crate) const ERROR_UNREADABLE_INPUT_DIR: &str = "Could not read the directory of the given zff file: ";
-pub(crate) const ERROR_UNDETERMINABLE_INPUT_DIR: &str = "could not determine input path!";
+pub(crate) const ERROR_UNSUPPORTED_HEADER_VERSION: &str = "The current header version is unsupported by zffmount.";
+pub(crate) const ERROR_PARSE_MAIN_HEADER: &str = "An error occurred while trying to parse the main header: ";
+pub(crate) const ERROR_UNKNOWN_HEADER: &str = "Could not read header of this file. This file is not a well formatted zff file.";
+pub(crate) const ERROR_PARSE_SEGMENT_HEADER: &str = "An error occurred while trying to parse the segment header: ";
+
+
 
 pub(crate) const EXIT_STATUS_ERROR: i32 = 1;
 pub(crate) const EXIT_STATUS_SUCCESS: i32 = 0;
