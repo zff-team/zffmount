@@ -19,28 +19,12 @@ pub(crate) const MOUNT_SUCCESSFUL: &str = "The image file(s) was/were mounted su
 pub(crate) const UNMOUNT_HINT: &str = "\nYou can unmount the file(s) by pressing CTRL+C - or unmount manually by typing umount";
 pub(crate) const UNMOUNT_SUCCESSFUL: &str = "\nUnmount successful. Have a nice day.";
 
-// fuser constants
-pub(crate) const TTL: Duration = Duration::from_secs(1); // 1 second
-pub(crate) const DEFAULT_BLOCKSIZE: u32 = 512;
-pub(crate) const FILESYSTEM_NAME: &str = "zff-fs";
 
-pub(crate) const DEFAULT_DIR_INODE: u64 = 1;
-
-// metadata file
-pub(crate) const DEFAULT_METADATA_NAME: &'static str = "metadata.toml";
-pub(crate) const DEFAULT_METADATA_INODE: u64 = 2;
-pub(crate) const DEFAULT_METADATA_FILE_PERMISSION: u16 = 0o644;
-pub(crate) const DEFAULT_METADATA_HARDLINKS: u32 = 1;
-
-// zff image file
-pub(crate) const DEFAULT_ZFF_IMAGE_NAME: &'static str = "zff_image.dd";
-pub(crate) const DEFAULT_ZFF_IMAGE_INODE: u64 = 3;
-pub(crate) const DEFAULT_ZFF_IMAGE_FILE_PERMISSION: u16 = 0o644;
-pub(crate) const DEFAULT_ZFF_IMAGE_HARDLINKS: u32 = 1;
-
-
-pub(crate) const DEFAULT_DIR_ATTR: FileAttr = FileAttr {
-    ino: DEFAULT_DIR_INODE,
+// Zff Overlay FS
+pub(crate) const OBJECT_PREFIX: &str = "object_";
+pub(crate) const ZFF_OVERLAY_SPECIAL_INODE_ROOT_DIR: u64 = 2;
+pub(crate) const ZFF_OVERLAY_ROOT_DIR_ATTR: FileAttr = FileAttr {
+    ino: 2,
     size: 0,
     blocks: 0,
     atime: UNIX_EPOCH, // 1970-01-01 00:00:00
@@ -56,7 +40,11 @@ pub(crate) const DEFAULT_DIR_ATTR: FileAttr = FileAttr {
     flags: 0,
     blksize: 512,
 };
-pub(crate) const DEFAULT_ENTRY_GENERATION: u64 = 0;
+pub(crate) const ZFF_OVERLAY_DEFAULT_ENTRY_GENERATION: u64 = 0;
+
+// fuser constants
+pub(crate) const TTL: Duration = Duration::from_secs(1); // 1 second
 
 // special paths
-pub(crate) const PWD: &'static str = ".";
+pub(crate) const CURRENT_DIR: &str = ".";
+pub(crate) const PARENT_DIR: &str = "..";

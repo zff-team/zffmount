@@ -1,4 +1,5 @@
 // - STD
+use std::ffi::OsStr;
 use std::process::exit;
 use std::path::PathBuf;
 use std::fs::{File,read_dir};
@@ -49,6 +50,7 @@ pub struct Cli {
 struct ZffOverlayFs {
     inputfiles: Vec<PathBuf>,
     objects: HashMap<u64, FileAttr>, // <object_number, File attributes>
+    inode_attributes_map: HashMap<u64, FileAttr> //<inode, File attributes>
 }
 
 impl ZffOverlayFs {
@@ -60,10 +62,11 @@ impl ZffOverlayFs {
             files.push(f);
         };
 
-        let mut zffreader = ZffReader::new(files, HashMap::new())?;
+        let zffreader = ZffReader::new(files, HashMap::new())?;
         let object_numbers = zffreader.object_numbers();
 
         let mut objects = HashMap::new();
+        let mut inode_attributes_map = HashMap::new();
 
         let mut current_inode = 12;
         for object_number in object_numbers {
@@ -100,6 +103,7 @@ impl ZffOverlayFs {
             };
 
             objects.insert(object_number, file_attr);
+            inode_attributes_map.insert(current_inode, file_attr);
 
             current_inode += 1;
         };
@@ -107,12 +111,90 @@ impl ZffOverlayFs {
         let overlay_fs = Self {
             inputfiles: inputfiles,
             objects: objects,
+            inode_attributes_map: inode_attributes_map,
         };
 
         Ok(overlay_fs)
     }
 }
 
+impl Filesystem for ZffOverlayFs {
+    fn readdir(
+        &mut self,
+        _req: &Request,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        mut reply: ReplyDirectory,
+    ) {
+        if ino != ZFF_OVERLAY_SPECIAL_INODE_ROOT_DIR {
+            reply.error(ENOENT);
+            return;
+        }
+
+        let mut entries = vec![
+            (ZFF_OVERLAY_SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(CURRENT_DIR)),
+            (ZFF_OVERLAY_SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(PARENT_DIR)),
+        ];
+        for (object_number, file_attr) in &self.objects {
+            let entry = (file_attr.ino, FileType::Directory, format!("{OBJECT_PREFIX}{object_number}"));
+            entries.push(entry);
+        }
+
+        for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
+            // i + 1 means the index of the next entry
+            if reply.add(entry.0, (i + 1) as i64, entry.1, entry.2) {
+                break;
+            }
+        }
+        reply.ok();
+    }
+
+    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+        if parent == ZFF_OVERLAY_SPECIAL_INODE_ROOT_DIR {
+            let name = match name.to_str() {
+                Some(name) => name,
+                None => {
+                    reply.error(ENOENT);
+                    return;
+                },
+            };
+            let mut split = name.rsplit(OBJECT_PREFIX);
+            let object_number = match split.next() {
+                None => {
+                    reply.error(ENOENT);
+                    return;
+                },
+                Some(unparsed_object_number) => match unparsed_object_number.parse::<u64>() {
+                    Ok(object_number) => object_number,
+                    Err(_) => {
+                        reply.error(ENOENT);
+                        return;
+                    },
+                },
+            };
+            let file_attr = match self.objects.get(&object_number) {
+                None => {
+                    reply.error(ENOENT);
+                    return;
+                },
+                Some(file_attr) => file_attr,
+            };
+            reply.entry(&TTL, &file_attr, ZFF_OVERLAY_DEFAULT_ENTRY_GENERATION);
+        } else {
+            reply.error(ENOENT);
+        }
+    }
+
+    fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
+        match self.inode_attributes_map.get(&ino) {
+            Some(file_attr) => reply.attr(&TTL, file_attr),
+            None => reply.error(ENOENT),
+        }
+    }
+}
+
+/*
 struct ZffObjectFs<R: Read + Seek> {
     zffreader: ZffReader<R>
-}
+}*/
