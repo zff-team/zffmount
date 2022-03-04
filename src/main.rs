@@ -1,4 +1,5 @@
 // - STD
+use std::os::unix::ffi::OsStrExt;
 use std::ffi::OsStr;
 use std::process::exit;
 use std::path::PathBuf;
@@ -30,6 +31,8 @@ use fuser::{
 use nix::unistd::{Uid, Gid};
 use libc::ENOENT;
 use time::{OffsetDateTime};
+#[macro_use] use log::{debug, LevelFilter};
+use env_logger;
 
 #[derive(Parser)]
 #[clap(about, version, author)]
@@ -47,6 +50,7 @@ pub struct Cli {
     decryption_password: Option<String>,
 }
 
+#[derive(Debug)]
 struct ZffOverlayFs {
     inputfiles: Vec<PathBuf>,
     objects: HashMap<u64, FileAttr>, // <object_number, File attributes>
@@ -140,10 +144,9 @@ impl Filesystem for ZffOverlayFs {
             let entry = (file_attr.ino, FileType::Directory, format!("{OBJECT_PREFIX}{object_number}"));
             entries.push(entry);
         }
-
-        for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
-            // i + 1 means the index of the next entry
-            if reply.add(entry.0, (i + 1) as i64, entry.1, entry.2) {
+        for (index, entry) in entries.into_iter().skip(offset as usize).enumerate() {
+            let (inode, file_type, name) = entry;
+            if reply.add(inode, offset + index as i64 + 1, file_type.into(), name) {
                 break;
             }
         }
@@ -189,7 +192,11 @@ impl Filesystem for ZffOverlayFs {
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
         match self.inode_attributes_map.get(&ino) {
             Some(file_attr) => reply.attr(&TTL, file_attr),
-            None => reply.error(ENOENT),
+            None => if ino == ZFF_OVERLAY_SPECIAL_INODE_ROOT_DIR {
+                reply.attr(&TTL, &ZFF_OVERLAY_ROOT_DIR_ATTR)
+            } else {
+                reply.error(ENOENT);
+            },
         }
     }
 }
@@ -198,3 +205,37 @@ impl Filesystem for ZffOverlayFs {
 struct ZffObjectFs<R: Read + Seek> {
     zffreader: ZffReader<R>
 }*/
+
+fn main() {
+    let args = Cli::parse();
+
+    let inputfiles = &args.inputfiles.into_iter().map(|i| PathBuf::from(i)).collect::<Vec<PathBuf>>();
+    let overlay_fs = match ZffOverlayFs::new(inputfiles.to_owned()) {
+        Ok(overlay_fs) => overlay_fs,
+        Err(e) => {
+            eprintln!("{e}");
+            exit(EXIT_STATUS_ERROR);
+        }
+    };
+    //TODO: remove or use correctly
+    let verbosity: u64 = 3;
+    let log_level = match verbosity {
+        0 => LevelFilter::Error,
+        1 => LevelFilter::Warn,
+        2 => LevelFilter::Info,
+        3 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
+    };
+    env_logger::builder()
+        .format_timestamp_nanos()
+        .filter_level(log_level)
+        .init();
+    let mountpoint = PathBuf::from(&args.mount_point);
+    let mountoptions = vec![MountOption::RO, MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME))];
+
+    let overlay_fuse_session = {
+        let session = match fuser::Session
+    };
+
+    fuser::mount2(overlay_fs, mountpoint, &mountoptions).unwrap();
+}
