@@ -12,9 +12,8 @@ pub(crate) const EXIT_STATUS_SUCCESS: i32 = 0;
 // Zff Overlay FS
 pub(crate) const ZFF_OVERLAY_FS_NAME: &str = "ZffOverlayFs";
 pub(crate) const OBJECT_PREFIX: &str = "object_";
-pub(crate) const ZFF_OVERLAY_SPECIAL_INODE_ROOT_DIR: u64 = 1;
 pub(crate) const ZFF_OVERLAY_ROOT_DIR_ATTR: FileAttr = FileAttr {
-    ino: ZFF_OVERLAY_SPECIAL_INODE_ROOT_DIR,
+    ino: SPECIAL_INODE_ROOT_DIR,
     size: 0,
     blocks: 0,
     atime: UNIX_EPOCH, // 1970-01-01 00:00:00
@@ -30,6 +29,18 @@ pub(crate) const ZFF_OVERLAY_ROOT_DIR_ATTR: FileAttr = FileAttr {
     flags: 0,
     blksize: 512,
 };
+
+// Zff Object fs
+pub(crate) const ZFF_OBJECT_FS_NAME: &str = "ZffObjectFs";
+pub(crate) const ZFF_OBJECT_FS_PHYSICAL_ATTR_INO: u64 = 2;
+pub(crate) const ZFF_OBJECT_FS_PHYSICAL_ATTR_PERM: u16 = 0o444;
+pub(crate) const ZFF_OBJECT_FS_PHYSICAL_ATTR_NLINKS: u32 = 1;
+
+// other default values
+pub(crate) const SPECIAL_INODE_ROOT_DIR: u64 = 1;
+pub(crate) const DEFAULT_BLOCKSIZE: u32 = 512;
+pub(crate) const ZFF_PHYSICAL_OBJECT_NAME: &str = "zff_image.dd";
+
 pub(crate) const ZFF_OVERLAY_DEFAULT_ENTRY_GENERATION: u64 = 0;
 
 // fuser constants
