@@ -29,7 +29,7 @@ use zff::{
 use lib::constants::*;
 
 // - external
-use clap::{Parser};
+use clap::{Parser, ArgEnum};
 use fuser::{
     FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry,
     Request, BackgroundSession, Session,
@@ -38,7 +38,7 @@ use nix::unistd::{Uid, Gid};
 use libc::ENOENT;
 use time::{OffsetDateTime};
 use ctrlc;
-use log::{LevelFilter, info, error};
+use log::{LevelFilter, debug, info, error};
 use env_logger;
 
 #[derive(Parser)]
@@ -55,6 +55,19 @@ pub struct Cli {
     /// The password, if the file has an encrypted main header. However, it will interactively ask for the correct password if it is missing or incorrect (but needed).
     #[clap(short='p', long="decryption-password")]
     decryption_password: Option<String>,
+
+    /// The Loglevel
+    #[clap(short='l', long="log-level", arg_enum, default_value="warn")]
+    log_level: LogLevel
+}
+
+#[derive(ArgEnum, Clone)]
+enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace
 }
 
 #[derive(Debug)]
@@ -179,12 +192,14 @@ impl Filesystem for ZffOverlayFs {
             let mut split = name.rsplit(OBJECT_PREFIX);
             let object_number = match split.next() {
                 None => {
+                    error!("LOOKUP: object prefix not in filename. This is an application bug. The filename is {name}");
                     reply.error(ENOENT);
                     return;
                 },
                 Some(unparsed_object_number) => match unparsed_object_number.parse::<u64>() {
                     Ok(object_number) => object_number,
                     Err(_) => {
+                        error!("LOOKUP: error while trying to parse the object number: {unparsed_object_number}");
                         reply.error(ENOENT);
                         return;
                     },
@@ -192,6 +207,7 @@ impl Filesystem for ZffOverlayFs {
             };
             let file_attr = match self.objects.get(&object_number) {
                 None => {
+                    error!("LOOKUP: cannot find the appropriate file attributes for object number {object_number}");
                     reply.error(ENOENT);
                     return;
                 },
@@ -199,6 +215,7 @@ impl Filesystem for ZffOverlayFs {
             };
             reply.entry(&TTL, &file_attr, ZFF_OVERLAY_DEFAULT_ENTRY_GENERATION);
         } else {
+            error!("LOOKUP: Parent ID {parent} not matching root inode dir {SPECIAL_INODE_ROOT_DIR}");
             reply.error(ENOENT);
         }
     }
@@ -209,6 +226,7 @@ impl Filesystem for ZffOverlayFs {
             None => if ino == SPECIAL_INODE_ROOT_DIR {
                 reply.attr(&TTL, &ZFF_OVERLAY_ROOT_DIR_ATTR)
             } else {
+                error!("GETATTR: unknown inode number: {ino}");
                 reply.error(ENOENT);
             },
         }
@@ -302,6 +320,7 @@ impl<R: Read + Seek> Filesystem for ZffPhysicalObjectFs<R> {
         if parent == SPECIAL_INODE_ROOT_DIR && name.to_str() == Some(ZFF_PHYSICAL_OBJECT_NAME) {     
             reply.entry(&TTL, &self.file_attr, ZFF_OVERLAY_DEFAULT_ENTRY_GENERATION);
         } else {
+            error!("LOOKUP: unknown parent ID / name combination. Parent ID: {parent}; name: {:?}", name.to_str());
             reply.error(ENOENT);
         }
     }
@@ -310,7 +329,10 @@ impl<R: Read + Seek> Filesystem for ZffPhysicalObjectFs<R> {
         match ino {
             SPECIAL_INODE_ROOT_DIR => reply.attr(&TTL, &self.object_file_attr),
             ZFF_OBJECT_FS_PHYSICAL_ATTR_INO => reply.attr(&TTL, &self.file_attr),
-            _ => reply.error(ENOENT),
+            _ => {
+                error!("GETATTR: unknown inode number: {ino}");
+                reply.error(ENOENT)
+            },
         }
     }
 
@@ -357,17 +379,15 @@ impl<R: Read + Seek> Filesystem for ZffPhysicalObjectFs<R> {
             let mut buffer = vec![0u8; size as usize];
             match self.zffreader.seek(SeekFrom::Start(offset as u64)) {
                 Ok(_) => (),
-                Err(e) => {
-                    eprintln!("{e}"); //TODO
-                    exit(EXIT_STATUS_ERROR); //TODO
-                }
+                Err(e) => error!("seek error: {e}"),
             };
             match self.zffreader.read(&mut buffer) {
                 Ok(_) => (),
-                Err(e) => eprintln!("{e}"), //TODO
+                Err(e) => error!("read error: {e}"),
             };
             reply.data(&buffer);
         } else {
+            error!("inode number mismatch: {ino}");
             reply.error(ENOENT);
         }
     }
@@ -378,13 +398,12 @@ fn main() {
     let args = Cli::parse();
 
     //TODO: remove or use correctly
-    let verbosity: u64 = 2;
-    let log_level = match verbosity {
-        0 => LevelFilter::Error,
-        1 => LevelFilter::Warn,
-        2 => LevelFilter::Info,
-        3 => LevelFilter::Debug,
-        _ => LevelFilter::Trace,
+    let log_level = match args.log_level {
+        LogLevel::Error => LevelFilter::Error,
+        LogLevel::Warn => LevelFilter::Warn,
+        LogLevel::Info => LevelFilter::Info,
+        LogLevel::Debug => LevelFilter::Debug,
+        LogLevel::Trace => LevelFilter::Trace,
     };
     env_logger::builder()
         .format_timestamp_nanos()
@@ -393,9 +412,12 @@ fn main() {
 
     let inputfiles = &args.inputfiles.into_iter().map(|i| PathBuf::from(i)).collect::<Vec<PathBuf>>();
     let overlay_fs = match ZffOverlayFs::new(inputfiles.to_owned()) {
-        Ok(overlay_fs) => overlay_fs,
+        Ok(overlay_fs) => {
+            info!("could create overlay filesystem successfully");
+            overlay_fs
+        },
         Err(e) => {
-            eprintln!("{e}");
+            error!("Could not build overlay filesystem: {e}");
             exit(EXIT_STATUS_ERROR);
         }
     };
@@ -410,16 +432,20 @@ fn main() {
                     let f = match File::open(&path) {
                         Ok(f) => f,
                         Err(e) => {
-                            eprintln!("{e}"); //TODO
+                            let path_name = &path.to_string_lossy();
+                            error!("Could not open file {path_name}: {e}");
                             exit(EXIT_STATUS_ERROR);
                         },
                     };
                     files.push(f);
                 };
                 let object_fs = match ZffPhysicalObjectFs::new(files, *object_number) {
-                    Ok(fs) => fs,
+                    Ok(fs) => {
+                        info!("could create object filesystem for object {object_number} successfully");
+                        fs
+                    },
                     Err(e) => {
-                        eprintln!("{e}"); //TODO
+                        error!("could not build object filesystem for object number {object_number}: {e}");
                         exit(EXIT_STATUS_ERROR);
                     },
                 };
@@ -435,7 +461,7 @@ fn main() {
     let overlay_session = match spawn_mount2(overlay_fs, &mountpoint, &overlay_mountoptions) {
         Ok(session) => session,
         Err(e) => {
-            error!("{e}");
+            error!("could not mount overlay filesystem: {e}");
             exit(EXIT_STATUS_ERROR);
         }
     };
@@ -448,7 +474,7 @@ fn main() {
         let session = match spawn_mount2(object_fs, inner_mountpoint, &object_mountoptions) {
             Ok(session) => session,
             Err(e) => {
-                error!("{e}");
+                error!("could not mount object filesystem for object number {object_number}: {e}");
                 exit(EXIT_STATUS_ERROR);
             },
         };
@@ -457,12 +483,18 @@ fn main() {
 
     let sigint = Arc::new(AtomicBool::new(false));
     let sigint_clone = Arc::clone(&sigint);
-    ctrlc::set_handler(move || {
-        sigint_clone.store(true, Ordering::Relaxed);
-    })
-    .expect("Error setting Ctrl-C handler");
+    match ctrlc::set_handler(move || {
+        sigint_clone.store(true, Ordering::SeqCst);
+    }) {
+        Ok(_) => (),
+        Err(e) => {
+            error!("{ERROR_SETTING_SIGINT_HANDLER}{e}");
+            exit(EXIT_STATUS_ERROR);
+        }
+    };
+
     loop {
-        if sigint.load(Ordering::Relaxed) {
+        if sigint.load(Ordering::SeqCst) {
             for session in object_fs_sessions {
                 session.join();
             }

@@ -5,6 +5,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use fuser::{FileAttr, FileType};
 
 // - errors
+pub(crate) const ERROR_SETTING_SIGINT_HANDLER: &str = "an error occurred while trying to set the SIGINT handler for CTRL+C / graceful umounting: ";
 
 pub(crate) const EXIT_STATUS_ERROR: i32 = 1;
 pub(crate) const EXIT_STATUS_SUCCESS: i32 = 0;
