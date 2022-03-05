@@ -1,7 +1,8 @@
 // - STD
 use std::collections::HashSet;
 use std::path::Path;
-
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::ffi::OsStr;
 use std::process::exit;
 use std::path::PathBuf;
@@ -36,7 +37,8 @@ use fuser::{
 use nix::unistd::{Uid, Gid};
 use libc::ENOENT;
 use time::{OffsetDateTime};
-use log::{LevelFilter};
+use ctrlc;
+use log::{LevelFilter, info, error};
 use env_logger;
 
 #[derive(Parser)]
@@ -376,7 +378,7 @@ fn main() {
     let args = Cli::parse();
 
     //TODO: remove or use correctly
-    let verbosity: u64 = 3;
+    let verbosity: u64 = 2;
     let log_level = match verbosity {
         0 => LevelFilter::Error,
         1 => LevelFilter::Warn,
@@ -430,18 +432,44 @@ fn main() {
     let overlay_mountoptions = vec![MountOption::RW, MountOption::AllowOther, MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME))];
     let object_mountoptions = vec![MountOption::RO, MountOption::AllowOther, MountOption::FSName(String::from(ZFF_OBJECT_FS_NAME))];
 
-    let overlay_session = spawn_mount2(overlay_fs, &mountpoint, &overlay_mountoptions).unwrap(); //TODO
+    let overlay_session = match spawn_mount2(overlay_fs, &mountpoint, &overlay_mountoptions) {
+        Ok(session) => session,
+        Err(e) => {
+            error!("{e}");
+            exit(EXIT_STATUS_ERROR);
+        }
+    };
 
     let mut object_fs_sessions = Vec::new();
     for object_fs in object_fs_vec {
         let mut inner_mountpoint = mountpoint.clone();
         let object_number = object_fs.object_number;
         inner_mountpoint.push(format!("{OBJECT_PREFIX}{object_number}"));
-        let session = spawn_mount2(object_fs, inner_mountpoint, &object_mountoptions).unwrap(); //TODO
+        let session = match spawn_mount2(object_fs, inner_mountpoint, &object_mountoptions) {
+            Ok(session) => session,
+            Err(e) => {
+                error!("{e}");
+                exit(EXIT_STATUS_ERROR);
+            },
+        };
         object_fs_sessions.push(session);
     }
 
-    loop {}
+    let sigint = Arc::new(AtomicBool::new(false));
+    let sigint_clone = Arc::clone(&sigint);
+    ctrlc::set_handler(move || {
+        sigint_clone.store(true, Ordering::Relaxed);
+    })
+    .expect("Error setting Ctrl-C handler");
+    loop {
+        if sigint.load(Ordering::Relaxed) {
+            for session in object_fs_sessions {
+                session.join();
+            }
+            overlay_session.join();
+            exit(EXIT_STATUS_SUCCESS);
+        }
+    }
 }
 
 pub fn spawn_mount2<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(

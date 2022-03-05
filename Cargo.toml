@@ -15,14 +15,13 @@ publish = true
 
 [dependencies]
 clap = { version = "3.0.5", features = [ "derive" ] }
-ctrlc = "3.2.1"
-crossbeam-channel = "0.5.1"
 fuser = "0.9.1"
 libc = "0.2.102"
 zff = { path="../../Projekte/zff" }
 nix = "0.23"
 walkdir = "2.3.2"
 time = { version = "0.3.4" }
+ctrlc = "3.2.1"
 #logging
 log = "0.4.6"
 env_logger = "0.9.0"
