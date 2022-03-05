@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::ffi::OsStr;
 use std::process::exit;
 use std::path::PathBuf;
@@ -37,7 +38,7 @@ use fuser::{
 use nix::unistd::{Uid, Gid};
 use libc::ENOENT;
 use time::{OffsetDateTime};
-use ctrlc;
+use signal_hook::{consts::{SIGINT, SIGHUP, SIGTERM}, iterator::Signals};
 use log::{LevelFilter, debug, info, error};
 use env_logger;
 
@@ -481,20 +482,24 @@ fn main() {
         object_fs_sessions.push(session);
     }
 
-    let sigint = Arc::new(AtomicBool::new(false));
-    let sigint_clone = Arc::clone(&sigint);
-    match ctrlc::set_handler(move || {
-        sigint_clone.store(true, Ordering::SeqCst);
-    }) {
-        Ok(_) => (),
+    let mut signals = match Signals::new(&[SIGINT, SIGHUP, SIGTERM]) {
+        Ok(signals) => signals,
         Err(e) => {
-            error!("{ERROR_SETTING_SIGINT_HANDLER}{e}");
+            error!("{ERROR_SETTING_SIGNAL_HANDLER}{e}");
             exit(EXIT_STATUS_ERROR);
-        }
+        },
     };
+    let running = Arc::new(AtomicBool::new(false));
+    let r = Arc::clone(&running);
+    thread::spawn(move || {
+        for sig in signals.forever() {
+            println!("Received signal {:?}", sig);
+            r.store(true, Ordering::SeqCst);
+        }
+    });
 
     loop {
-        if sigint.load(Ordering::SeqCst) {
+        if running.load(Ordering::SeqCst) {
             for session in object_fs_sessions {
                 session.join();
             }
