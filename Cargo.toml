@@ -20,8 +20,12 @@ libc = "0.2.102"
 zff = { path="../../Projekte/zff" }
 nix = "0.23"
 walkdir = "2.3.2"
-time = { version = "0.3.4" }
+time = { version = "0.3.4", features = [ "formatting" ] }
 signal-hook = "0.3.13"
 #logging
 log = "0.4.6"
 env_logger = "0.9.0"
+#serialize
+serde = { version = "1.0", features = ["derive"] }
+hex = "0.4.3"
+toml = "0.5.8"

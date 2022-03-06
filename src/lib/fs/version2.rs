@@ -174,7 +174,7 @@ impl Filesystem for ZffOverlayFs {
                 },
                 Some(file_attr) => file_attr,
             };
-            reply.entry(&TTL, &file_attr, ZFF_OVERLAY_DEFAULT_ENTRY_GENERATION);
+            reply.entry(&TTL, &file_attr, DEFAULT_ENTRY_GENERATION);
         } else {
             error!("LOOKUP: Parent ID {parent} not matching root inode dir {SPECIAL_INODE_ROOT_DIR}");
             reply.error(ENOENT);
@@ -185,7 +185,7 @@ impl Filesystem for ZffOverlayFs {
         match self.inode_attributes_map.get(&ino) {
             Some(file_attr) => reply.attr(&TTL, file_attr),
             None => if ino == SPECIAL_INODE_ROOT_DIR {
-                reply.attr(&TTL, &ZFF_OVERLAY_ROOT_DIR_ATTR)
+                reply.attr(&TTL, &DEFAULT_ROOT_DIR_ATTR)
             } else {
                 error!("GETATTR: unknown inode number: {ino}");
                 reply.error(ENOENT);
@@ -279,7 +279,7 @@ impl<R: Read + Seek> ZffPhysicalObjectFs<R> {
 impl<R: Read + Seek> Filesystem for ZffPhysicalObjectFs<R> {
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         if parent == SPECIAL_INODE_ROOT_DIR && name.to_str() == Some(ZFF_PHYSICAL_OBJECT_NAME) {     
-            reply.entry(&TTL, &self.file_attr, ZFF_OVERLAY_DEFAULT_ENTRY_GENERATION);
+            reply.entry(&TTL, &self.file_attr, DEFAULT_ENTRY_GENERATION);
         } else {
             error!("LOOKUP: unknown parent ID / name combination. Parent ID: {parent}; name: {:?}", name.to_str());
             reply.error(ENOENT);

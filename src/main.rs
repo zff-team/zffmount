@@ -13,9 +13,10 @@ use std::fs::{File};
 mod lib;
 
 // - internal
-use lib::fs::{version2::*};
+use lib::fs::{version2::*, version1::*};
 use zff::{
     header::*,
+    ZffErrorKind,
 };
 
 
@@ -32,7 +33,7 @@ use fuser::{MountOption};
 
 
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[clap(about, version, author)]
 pub struct Cli {
     /// The input files. This should be your zff image files. You can use this Option multiple times.
@@ -61,6 +62,90 @@ enum LogLevel {
     Trace
 }
 
+fn start_version1_fs(args: &Cli) {
+    let inputfiles = &args.inputfiles.clone().into_iter().map(|i| PathBuf::from(i)).collect::<Vec<PathBuf>>();
+    let mut files = Vec::new();
+    for path in inputfiles {
+        let f = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                let path_name = &path.to_string_lossy();
+                error!("Could not open file {path_name}: {e}");
+                exit(EXIT_STATUS_ERROR);
+            },
+        };
+        files.push(f);
+    };
+    let zff_fs = match ZffFS::new(files) {
+        Ok(zff_fs) => zff_fs,
+        Err(e) => match e.get_kind() {
+            ZffErrorKind::MissingEncryptionKey => {
+                let password = match &args.decryption_password {
+                    None => {
+                        error!("{ERROR_MISSING_ENCRYPTION_KEY}");
+                        exit(EXIT_STATUS_ERROR);
+                    },
+                    Some(pw) => pw,
+                };
+                let mut files = Vec::new();
+                for path in inputfiles {
+                    let f = match File::open(&path) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            let path_name = &path.to_string_lossy();
+                            error!("Could not open file {path_name}: {e}");
+                            exit(EXIT_STATUS_ERROR);
+                        },
+                    };
+                    files.push(f);
+                };
+                match ZffFS::new_encrypted(files, password) {
+                    Ok(zff_fs) => zff_fs,
+                    Err(e) => {
+                        error!("{e}");
+                        exit(EXIT_STATUS_ERROR);
+                    }
+                }
+            },
+            other @ _ => {
+                error!("{other}");
+                exit(EXIT_STATUS_ERROR);
+            },
+        }
+    };
+    let mountoptions = vec![MountOption::RO, MountOption::FSName(String::from(ZFF_VERSION1_IMAGE_FS_NAME))];
+    let session = match fuser::spawn_mount2(zff_fs, &args.mount_point, &mountoptions) {
+        Ok(session) => session,
+        Err(e) => {
+            error!("could not mount ZffFs filesystem: {e}");
+            exit(EXIT_STATUS_ERROR);
+        }
+    };
+    let mut signals = match Signals::new(&[SIGINT, SIGHUP, SIGTERM]) {
+        Ok(signals) => signals,
+        Err(e) => {
+            error!("{ERROR_SETTING_SIGNAL_HANDLER}{e}");
+            exit(EXIT_STATUS_ERROR);
+        },
+    };
+    let running = Arc::new(AtomicBool::new(false));
+    let r = Arc::clone(&running);
+    thread::spawn(move || {
+        for sig in signals.forever() {
+            info!("Received shutdown signal {:?}. The filesystems will be unmounted, as soon as the resource is no longer busy.", sig);
+            r.store(true, Ordering::SeqCst);
+        }
+    });
+
+    loop {
+        if running.load(Ordering::SeqCst) {
+            session.join();
+            exit(EXIT_STATUS_SUCCESS);
+        }
+    }
+
+}
+
 fn main() {
     let args = Cli::parse();
 
@@ -77,13 +162,17 @@ fn main() {
         .filter_level(log_level)
         .init();
 
-    let inputfiles = &args.inputfiles.into_iter().map(|i| PathBuf::from(i)).collect::<Vec<PathBuf>>();
+    let inputfiles = &args.inputfiles.clone().into_iter().map(|i| PathBuf::from(i)).collect::<Vec<PathBuf>>();
     let overlay_fs = match ZffOverlayFs::new(inputfiles.to_owned()) {
         Ok(overlay_fs) => {
             info!("could create overlay filesystem successfully");
             overlay_fs
         },
         Err(e) => {
+            match e.get_kind() {
+                ZffErrorKind::HeaderDecodeMismatchIdentifier => start_version1_fs(&args),
+                _ => (),
+            }
             error!("Could not build overlay filesystem: {e}");
             exit(EXIT_STATUS_ERROR);
         }
@@ -123,7 +212,7 @@ fn main() {
 
     let mountpoint = PathBuf::from(&args.mount_point);
     let overlay_mountoptions = vec![MountOption::RW, MountOption::AllowOther, MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME))];
-    let object_mountoptions = vec![MountOption::RO, MountOption::AllowOther, MountOption::FSName(String::from(ZFF_OBJECT_FS_NAME))];
+    let object_mountoptions = vec![MountOption::RO, MountOption::FSName(String::from(ZFF_OBJECT_FS_NAME))];
 
     let overlay_session = match fuser::spawn_mount2(overlay_fs, &mountpoint, &overlay_mountoptions) {
         Ok(session) => session,
