@@ -196,7 +196,7 @@ impl<R: Read + Seek> ZffFS<R> {
             nlink: 1,
             uid: Uid::effective().into(),
             gid: Gid::effective().into(),
-            rdev: 1,
+            rdev: 0,
             flags: 0,
             blksize: DEFAULT_BLOCKSIZE,
         };
