@@ -441,20 +441,22 @@ impl<R: Read + Seek> ZffLogicalObjectFs<R> {
             Err(_) => UNIX_EPOCH,
         };
 
-        let mut filenumber = filenumber;
-        let kind = match fileinformation.header().file_type() {
-            ZffFileType::File => FileType::RegularFile,
-            ZffFileType::Directory => FileType::Directory,
-            ZffFileType::Symlink => FileType::Symlink,
+        let filenumber = match fileinformation.header().file_type() {
             ZffFileType::Hardlink => {
                 self.zffreader.rewind()?;
                 let size = fileinformation.length_of_data();
                 let mut buffer = vec![0u8; size as usize];
                 self.zffreader.read(&mut buffer)?;
                 let mut cursor = Cursor::new(buffer);
-                filenumber = u64::decode_directly(&mut cursor)?;
-                FileType::RegularFile
+                u64::decode_directly(&mut cursor)?
             },
+            _ => filenumber
+        };
+        let kind = match fileinformation.header().file_type() {
+            ZffFileType::File => FileType::RegularFile,
+            ZffFileType::Directory => FileType::Directory,
+            ZffFileType::Symlink => FileType::Symlink,
+            ZffFileType::Hardlink => FileType::RegularFile,
             _ => return Err(ZffError::new(ZffErrorKind::UnimplementedFileType, "")),
         };
 
