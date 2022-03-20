@@ -36,7 +36,7 @@ use fuser::{MountOption};
 #[derive(Parser, Clone)]
 #[clap(about, version, author)]
 pub struct Cli {
-    /// The input files. This should be your zff image files. You can use this Option multiple times.
+    /// The input files. This should be your zff image files. You can use this option multiple times.
     #[clap(short='i', long="inputfiles", global=true, required=false)]
     inputfiles: Vec<String>,
 
@@ -181,7 +181,31 @@ fn main() {
     let mut object_fs_vec = Vec::new();
     for (object_number, object_type) in &overlay_fs.object_types_map {
         match object_type {
-            ObjectType::Logical => unimplemented!(),
+            ObjectType::Logical => {
+                let mut files = Vec::new();
+                for path in inputfiles {
+                    let f = match File::open(&path) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            let path_name = &path.to_string_lossy();
+                            error!("Could not open file {path_name}: {e}");
+                            exit(EXIT_STATUS_ERROR);
+                        },
+                    };
+                    files.push(f);
+                };
+                let object_fs = match ZffLogicalObjectFs::new(files, *object_number) {
+                    Ok(fs) => {
+                        info!("could create object filesystem for object {object_number} successfully");
+                        fs
+                    },
+                    Err(e) => {
+                        error!("could not build object filesystem for object number {object_number}: {e}");
+                        exit(EXIT_STATUS_ERROR);
+                    },
+                };
+                object_fs_vec.push(ZffObjectFs::Logical(object_fs));
+            },
             ObjectType::Physical => {
                 let mut files = Vec::new();
                 for path in inputfiles {
@@ -205,7 +229,7 @@ fn main() {
                         exit(EXIT_STATUS_ERROR);
                     },
                 };
-                object_fs_vec.push(object_fs);
+                object_fs_vec.push(ZffObjectFs::Physical(object_fs));
             },
         }
     }
@@ -225,16 +249,33 @@ fn main() {
     let mut object_fs_sessions = Vec::new();
     for object_fs in object_fs_vec {
         let mut inner_mountpoint = mountpoint.clone();
-        let object_number = object_fs.object_number;
-        inner_mountpoint.push(format!("{OBJECT_PREFIX}{object_number}"));
-        let session = match fuser::spawn_mount2(object_fs, inner_mountpoint, &object_mountoptions) {
-            Ok(session) => session,
-            Err(e) => {
-                error!("could not mount object filesystem for object number {object_number}: {e}");
-                exit(EXIT_STATUS_ERROR);
+        match object_fs {
+            ZffObjectFs::Physical(object_fs) => {
+                let object_number = object_fs.object_number;
+                inner_mountpoint.push(format!("{OBJECT_PREFIX}{object_number}"));
+                let session = match fuser::spawn_mount2(object_fs, inner_mountpoint, &object_mountoptions) {
+                    Ok(session) => session,
+                    Err(e) => {
+                        error!("could not mount object filesystem for object number {object_number}: {e}");
+                        exit(EXIT_STATUS_ERROR);
+                    },
+                };
+                object_fs_sessions.push(session);
             },
-        };
-        object_fs_sessions.push(session);
+            ZffObjectFs::Logical(object_fs) => {
+                let object_number = object_fs.object_number;
+                inner_mountpoint.push(format!("{OBJECT_PREFIX}{object_number}"));
+                let session = match fuser::spawn_mount2(object_fs, inner_mountpoint, &object_mountoptions) {
+                    Ok(session) => session,
+                    Err(e) => {
+                        error!("could not mount object filesystem for object number {object_number}: {e}");
+                        exit(EXIT_STATUS_ERROR);
+                    },
+                };
+                object_fs_sessions.push(session);
+            },
+        }
+        
     }
 
     let mut signals = match Signals::new(&[SIGINT, SIGHUP, SIGTERM]) {
