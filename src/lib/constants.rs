@@ -47,7 +47,7 @@ pub(crate) const SPECIAL_INODE_ROOT_DIR: u64 = 1;
 pub(crate) const DEFAULT_BLOCKSIZE: u32 = 512;
 pub(crate) const ZFF_PHYSICAL_OBJECT_NAME: &str = "zff_image.dd";
 
-pub(crate) const DEFAULT_READONLY_PERMISSIONS_REGULAR_FILE: u16 = 0o444;
+pub(crate) const DEFAULT_READONLY_PERMISSIONS_REGULAR_FILE: u16 = 0o555;
 pub(crate) const DEFAULT_VERSION1_METADATA_INODE: u64 = 2;
 pub(crate) const DEFAULT_VERSION1_ZFFIMAGE_INODE: u64 = 3;
 pub(crate) const DEFAULT_VERSION1_METADATA_NAME: &str = "metadata.toml";
