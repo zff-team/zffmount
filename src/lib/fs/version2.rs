@@ -35,21 +35,71 @@ use time::{OffsetDateTime};
 #[derive(Debug)]
 pub struct ZffOverlayFs {
     pub objects: HashMap<u64, FileAttr>, // <object_number, File attributes>
+    pub undecryptable_objects: Vec<u64>, // <object number>,
     pub object_types_map: HashMap<u64, ObjectType>, // <object_number, object type>
     pub inode_attributes_map: HashMap<u64, FileAttr> //<inode, File attributes>
 }
 
 impl ZffOverlayFs {
-    pub fn new(inputfiles: Vec<PathBuf>) -> Result<ZffOverlayFs> {
+    pub fn new(inputfiles: Vec<PathBuf>, decryption_passwords: &Vec<String>) -> Result<ZffOverlayFs> {
         //TODO: handle encrypted objects
+        let mut files = Vec::new();
+        for path in &inputfiles {
+         let f = File::open(&path)?;
+            files.push(f);
+        };
+
+        let temp_zffreader = ZffReader::new(files, HashMap::new())?;
+        let object_numbers = temp_zffreader.object_numbers();
+
+        //check encryption and try to decrypt
+        let mut undecryptable = Vec::new();
+        let mut passwords_per_object = HashMap::new();
+        for object in temp_zffreader.objects() {
+            let object_number = object.object_number();
+            match object.encryption_header() {
+                None => (),
+                Some(_) => {
+                    for password in decryption_passwords {
+                        let mut files = Vec::new();
+                        for path in &inputfiles {
+                            let f = File::open(&path)?;
+                            files.push(f);
+                        };
+                        let mut obj_decryption_password_map = HashMap::new();
+                        obj_decryption_password_map.insert(object_number, password.clone());
+                        let mut temp_zffreader = match ZffReader::new(files, obj_decryption_password_map) {
+                            Ok(reader) => reader,
+                            Err(e) => match e.get_kind() {
+                                ZffErrorKind::HeaderDecodeEncryptedHeader => {
+                                    continue;
+                                },
+                                ZffErrorKind::PKCS5CryptoError => {
+                                    continue;
+                                }
+                                _ => return Err(e),
+                            }
+                        };
+                        match temp_zffreader.check_decryption(object_number) {
+                            Err(e) => return Err(e),
+                            Ok(value) => if value { passwords_per_object.insert(object_number, password.clone()); },
+                        };
+                    }
+                    if !passwords_per_object.contains_key(&object_number) {
+                        undecryptable.push(object_number)
+                    }
+                }
+            }
+        }
+
+
         let mut files = Vec::new();
         for path in &inputfiles {
             let f = File::open(&path)?;
             files.push(f);
         };
+        let zffreader = ZffReader::new(files, passwords_per_object)?;
 
-        let zffreader = ZffReader::new(files, HashMap::new())?;
-        let object_numbers = zffreader.object_numbers();
 
         let mut objects = HashMap::new();
         let mut object_types_map = HashMap::new();
@@ -103,6 +153,7 @@ impl ZffOverlayFs {
 
         let overlay_fs = Self {
             objects: objects,
+            undecryptable_objects: undecryptable,
             object_types_map: object_types_map,
             inode_attributes_map: inode_attributes_map,
         };

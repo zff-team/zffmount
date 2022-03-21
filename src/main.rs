@@ -25,7 +25,7 @@ use lib::constants::*;
 // - external
 use clap::{Parser, ArgEnum};
 use signal_hook::{consts::{SIGINT, SIGHUP, SIGTERM}, iterator::Signals};
-use log::{LevelFilter, info, error};
+use log::{LevelFilter, info, error, warn};
 use env_logger;
 use fuser::{MountOption};
 
@@ -44,12 +44,12 @@ pub struct Cli {
     #[clap(short='m', long="mount-point")]
     mount_point: PathBuf,
 
-    /// The password, if the file has an encrypted main header. However, it will interactively ask for the correct password if it is missing or incorrect (but needed).
+    /// The password(s), if the file(s) are encrypted. You can use this option multiple times to enter different passwords for different objects.
     #[clap(short='p', long="decryption-password")]
-    decryption_password: Option<String>,
+    decryption_passwords: Vec<String>,
 
     /// The Loglevel
-    #[clap(short='l', long="log-level", arg_enum, default_value="warn")]
+    #[clap(short='l', long="log-level", arg_enum, default_value="info")]
     log_level: LogLevel
 }
 
@@ -80,13 +80,13 @@ fn start_version1_fs(args: &Cli) {
         Ok(zff_fs) => zff_fs,
         Err(e) => match e.get_kind() {
             ZffErrorKind::MissingEncryptionKey => {
-                let password = match &args.decryption_password {
-                    None => {
-                        error!("{ERROR_MISSING_ENCRYPTION_KEY}");
-                        exit(EXIT_STATUS_ERROR);
-                    },
-                    Some(pw) => pw,
-                };
+                if args.decryption_passwords.len() as u64 != 1 {
+                    error!("{ERROR_MISSING_ENCRYPTION_KEY}");
+                    exit(EXIT_STATUS_ERROR);
+
+                }
+                let password = &args.decryption_passwords[0];
+                
                 let mut files = Vec::new();
                 for path in inputfiles {
                     let f = match File::open(&path) {
@@ -163,7 +163,7 @@ fn main() {
         .init();
 
     let inputfiles = &args.inputfiles.clone().into_iter().map(|i| PathBuf::from(i)).collect::<Vec<PathBuf>>();
-    let overlay_fs = match ZffOverlayFs::new(inputfiles.to_owned()) {
+    let overlay_fs = match ZffOverlayFs::new(inputfiles.to_owned(), &args.decryption_passwords) {
         Ok(overlay_fs) => {
             info!("could create overlay filesystem successfully");
             overlay_fs
@@ -194,17 +194,21 @@ fn main() {
                     };
                     files.push(f);
                 };
-                let object_fs = match ZffLogicalObjectFs::new(files, *object_number) {
+                match ZffLogicalObjectFs::new(files, *object_number) {
                     Ok(fs) => {
+                        if overlay_fs.undecryptable_objects.contains(object_number) {
+                            warn!("object {object_number} is still encrypted and could not be mount!");
+                        } else {
+                            object_fs_vec.push(ZffObjectFs::Logical(fs));
+                            info!("could create object filesystem for object {object_number} successfully");
+                        }
                         info!("could create object filesystem for object {object_number} successfully");
-                        fs
                     },
                     Err(e) => {
                         error!("could not build object filesystem for object number {object_number}: {e}");
                         exit(EXIT_STATUS_ERROR);
                     },
                 };
-                object_fs_vec.push(ZffObjectFs::Logical(object_fs));
             },
             ObjectType::Physical => {
                 let mut files = Vec::new();
@@ -219,17 +223,21 @@ fn main() {
                     };
                     files.push(f);
                 };
-                let object_fs = match ZffPhysicalObjectFs::new(files, *object_number) {
+                match ZffPhysicalObjectFs::new(files, *object_number) {
                     Ok(fs) => {
+                        if overlay_fs.undecryptable_objects.contains(object_number) {
+                            warn!("object {object_number} is still encrypted and could not be mount!");
+                        } else {
+                            object_fs_vec.push(ZffObjectFs::Physical(fs));
+                            info!("could create object filesystem for object {object_number} successfully");
+                        }
                         info!("could create object filesystem for object {object_number} successfully");
-                        fs
                     },
                     Err(e) => {
                         error!("could not build object filesystem for object number {object_number}: {e}");
                         exit(EXIT_STATUS_ERROR);
                     },
                 };
-                object_fs_vec.push(ZffObjectFs::Physical(object_fs));
             },
         }
     }
