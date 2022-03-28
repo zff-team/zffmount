@@ -26,8 +26,8 @@ pub(crate) const DEFAULT_ROOT_DIR_ATTR: FileAttr = FileAttr {
     kind: FileType::Directory,
     perm: 0o755,
     nlink: 2,
-    uid: 1000,
-    gid: 1000,
+    uid: 0,
+    gid: 0,
     rdev: 0,
     flags: 0,
     blksize: 512,
@@ -51,7 +51,9 @@ pub(crate) const DEFAULT_READONLY_PERMISSIONS_REGULAR_FILE: u16 = 0o555;
 pub(crate) const DEFAULT_VERSION1_METADATA_INODE: u64 = 2;
 pub(crate) const DEFAULT_VERSION1_ZFFIMAGE_INODE: u64 = 3;
 pub(crate) const DEFAULT_VERSION1_METADATA_NAME: &str = "metadata.toml";
-pub(crate) const DEFAULT_VERSION1_ZFF_IMAGE_NAME: & str = "zff_image.dd";
+pub(crate) const DEFAULT_VERSION1_ZFF_IMAGE_NAME: &str = "zff_image.dd";
+
+pub(crate) const DEFAULT_TRASHFOLDER_NAME: &str = ".Trash";
 
 pub(crate) const DEFAULT_ENTRY_GENERATION: u64 = 0;
 

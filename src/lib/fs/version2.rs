@@ -212,7 +212,15 @@ impl Filesystem for ZffOverlayFs {
                 Some(unparsed_object_number) => match unparsed_object_number.parse::<u64>() {
                     Ok(object_number) => object_number,
                     Err(_) => {
-                        error!("LOOKUP: error while trying to parse the object number: {unparsed_object_number}");
+                        //This is a workaround: Some Desktop environments trying to lookup for folders like ".Trash" or ".Trash-1000", but these do not exist.
+                        if unparsed_object_number == DEFAULT_TRASHFOLDER_NAME {
+                            reply.error(ENOENT);
+                            return;
+                        } else if unparsed_object_number == &format!("{DEFAULT_TRASHFOLDER_NAME}-{}", Uid::effective()) {
+                            reply.error(ENOENT);
+                            return;
+                        }
+                        debug!("LOOKUP: error while trying to parse the object: {unparsed_object_number}");
                         reply.error(ENOENT);
                         return;
                     },
@@ -220,7 +228,7 @@ impl Filesystem for ZffOverlayFs {
             };
             let file_attr = match self.objects.get(&object_number) {
                 None => {
-                    error!("LOOKUP: cannot find the appropriate file attributes for object number {object_number}");
+                    debug!("LOOKUP: cannot find the appropriate file attributes for object number {object_number}");
                     reply.error(ENOENT);
                     return;
                 },
@@ -228,7 +236,7 @@ impl Filesystem for ZffOverlayFs {
             };
             reply.entry(&TTL, &file_attr, DEFAULT_ENTRY_GENERATION);
         } else {
-            error!("LOOKUP: Parent ID {parent} not matching root inode dir {SPECIAL_INODE_ROOT_DIR}");
+            debug!("LOOKUP: Parent ID {parent} not matching root inode dir {SPECIAL_INODE_ROOT_DIR}");
             reply.error(ENOENT);
         }
     }
@@ -239,7 +247,7 @@ impl Filesystem for ZffOverlayFs {
             None => if ino == SPECIAL_INODE_ROOT_DIR {
                 reply.attr(&TTL, &DEFAULT_ROOT_DIR_ATTR)
             } else {
-                error!("GETATTR: unknown inode number: {ino}");
+                debug!("GETATTR: unknown inode number: {ino}");
                 reply.error(ENOENT);
             },
         }
@@ -338,7 +346,15 @@ impl<R: Read + Seek> Filesystem for ZffPhysicalObjectFs<R> {
         if parent == SPECIAL_INODE_ROOT_DIR && name.to_str() == Some(ZFF_PHYSICAL_OBJECT_NAME) {     
             reply.entry(&TTL, &self.file_attr, DEFAULT_ENTRY_GENERATION);
         } else {
-            error!("LOOKUP: unknown parent ID / name combination. Parent ID: {parent}; name: {:?}", name.to_str());
+            //This is a workaround: Some Desktop environments trying to lookup for folders like ".Trash" or ".Trash-1000", but these do not exist.
+            if name.to_str() == Some(DEFAULT_TRASHFOLDER_NAME) {
+                reply.error(ENOENT);
+                return;
+            } else if name.to_str() == Some(&format!("{DEFAULT_TRASHFOLDER_NAME}-{}", Uid::effective())) {
+                reply.error(ENOENT);
+                return;
+            }
+            debug!("LOOKUP: unknown parent ID / name combination. Parent ID: {parent}; name: {:?}", name.to_str());
             reply.error(ENOENT);
         }
     }
@@ -348,7 +364,7 @@ impl<R: Read + Seek> Filesystem for ZffPhysicalObjectFs<R> {
             SPECIAL_INODE_ROOT_DIR => reply.attr(&TTL, &self.object_file_attr),
             ZFF_OBJECT_FS_PHYSICAL_ATTR_INO => reply.attr(&TTL, &self.file_attr),
             _ => {
-                error!("GETATTR: unknown inode number: {ino}");
+                debug!("GETATTR: unknown inode number: {ino}");
                 reply.error(ENOENT)
             },
         }

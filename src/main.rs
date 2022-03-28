@@ -165,7 +165,7 @@ fn main() {
     let inputfiles = &args.inputfiles.clone().into_iter().map(|i| PathBuf::from(i)).collect::<Vec<PathBuf>>();
     let overlay_fs = match ZffOverlayFs::new(inputfiles.to_owned(), &args.decryption_passwords) {
         Ok(overlay_fs) => {
-            info!("could create overlay filesystem successfully");
+            info!("MOUNT: Overlay filesystem created successfully");
             overlay_fs
         },
         Err(e) => {
@@ -173,7 +173,7 @@ fn main() {
                 ZffErrorKind::HeaderDecodeMismatchIdentifier => start_version1_fs(&args),
                 _ => (),
             }
-            error!("Could not build overlay filesystem: {e}");
+            error!("MOUNT: Could not create overlay filesystem: {e}");
             exit(EXIT_STATUS_ERROR);
         }
     };
@@ -197,15 +197,14 @@ fn main() {
                 match ZffLogicalObjectFs::new(files, *object_number) {
                     Ok(fs) => {
                         if overlay_fs.undecryptable_objects.contains(object_number) {
-                            warn!("object {object_number} is still encrypted and could not be mount!");
+                            warn!("MOUNT: object {object_number}: still encrypted and could not be mount! (Wrong or missing password?)");
                         } else {
                             object_fs_vec.push(ZffObjectFs::Logical(fs));
-                            info!("could create object filesystem for object {object_number} successfully");
+                            info!("MOUNT: Object filesystem for object {object_number} created successfully");
                         }
-                        info!("could create object filesystem for object {object_number} successfully");
                     },
                     Err(e) => {
-                        error!("could not build object filesystem for object number {object_number}: {e}");
+                        error!("MOUNT: could not create object filesystem for object number {object_number}: {e}");
                         exit(EXIT_STATUS_ERROR);
                     },
                 };
@@ -226,15 +225,14 @@ fn main() {
                 match ZffPhysicalObjectFs::new(files, *object_number) {
                     Ok(fs) => {
                         if overlay_fs.undecryptable_objects.contains(object_number) {
-                            warn!("object {object_number} is still encrypted and could not be mount!");
+                            warn!("MOUNT: object {object_number}: still encrypted and could not be mount! (Wrong or missing password?)");
                         } else {
                             object_fs_vec.push(ZffObjectFs::Physical(fs));
-                            info!("could create object filesystem for object {object_number} successfully");
+                            info!("MOUNT: Object filesystem for object {object_number} created successfully");
                         }
-                        info!("could create object filesystem for object {object_number} successfully");
                     },
                     Err(e) => {
-                        error!("could not build object filesystem for object number {object_number}: {e}");
+                        error!("MOUNT: could not create object filesystem for object number {object_number}: {e}");
                         exit(EXIT_STATUS_ERROR);
                     },
                 };
@@ -243,7 +241,7 @@ fn main() {
     }
 
     let mountpoint = PathBuf::from(&args.mount_point);
-    let overlay_mountoptions = vec![MountOption::RW, MountOption::AllowOther, MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME))];
+    let overlay_mountoptions = vec![MountOption::RW, MountOption::AllowRoot, MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME))];
     let object_mountoptions = vec![MountOption::RO, MountOption::FSName(String::from(ZFF_OBJECT_FS_NAME))];
 
     let overlay_session = match fuser::spawn_mount2(overlay_fs, &mountpoint, &overlay_mountoptions) {
@@ -297,7 +295,7 @@ fn main() {
     let r = Arc::clone(&running);
     thread::spawn(move || {
         for sig in signals.forever() {
-            info!("Received shutdown signal {:?}. The filesystems will be unmounted, as soon as the resource is no longer busy.", sig);
+            warn!("Received shutdown signal {:?}. The filesystems will be unmounted, as soon as the resource is no longer busy.", sig);
             r.store(true, Ordering::SeqCst);
         }
     });
