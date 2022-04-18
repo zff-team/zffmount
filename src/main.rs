@@ -102,13 +102,13 @@ fn start_version1_fs(args: &Cli) {
                 match ZffFS::new_encrypted(files, password) {
                     Ok(zff_fs) => zff_fs,
                     Err(e) => {
-                        error!("{e}");
+                        error!("Error while trying to mount encrypted object: {e}");
                         exit(EXIT_STATUS_ERROR);
                     }
                 }
             },
-            other @ _ => {
-                error!("{other}");
+            other => {
+                error!("MOUNT: Error while trying to mount filesystem: {other}");
                 exit(EXIT_STATUS_ERROR);
             },
         }

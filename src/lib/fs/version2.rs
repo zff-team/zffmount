@@ -591,7 +591,7 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
             match self.zffreader.read(&mut buffer) {
                 Ok(_) => (),
                 Err(e) => {
-                    error!("{e}");
+                    error!("LOOKUP: Read error: {e}");
                     reply.error(ENOENT);
                     return;
                 },
@@ -705,7 +705,7 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
             match self.zffreader.read(&mut buffer) {
                 Ok(_) => (),
                 Err(e) => {
-                    error!("{e}");
+                    error!("READDIR: Read error: {e}");
                     reply.error(ENOENT);
                     return;
                 },
@@ -721,17 +721,22 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
             };
             childs
         };
+        debug!("READDIR: childs in dir: {:?}", childs);
 
         for child_filenumber in childs {
             let fileinformation = match self.zffreader.set_reader_logical_object_file(self.object_number, child_filenumber) {
                 Ok(_) => match self.zffreader.file_information() {
                     Ok(fileinformation) => fileinformation,
-                    Err(_) => {
+                    Err(e) => {
+                        let object_number = self.object_number;
+                        error!("READDIR: error while trying to read fileinformation(1) for file {child_filenumber} in object {object_number}. Internal error message: {e}");
                         reply.error(ENOENT);
                         return;
                     }
                 },
-                Err(_) => {
+                Err(e) => {
+                    let object_number = self.object_number;
+                    error!("READDIR: error while trying to read fileinformation(2) for file {child_filenumber} in object {object_number}. Internal error message: {e}");
                     reply.error(ENOENT);
                     return;
                 }
@@ -807,7 +812,7 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
                 match self.zffreader.read(&mut buffer) {
                     Ok(_) => (),
                     Err(e) => {
-                        error!("{e}");
+                        error!("READ: error: {e}");
                         reply.error(ENOENT);
                         return;
                     },
