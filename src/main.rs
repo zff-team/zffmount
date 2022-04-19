@@ -163,7 +163,7 @@ fn main() {
         .init();
 
     let inputfiles = &args.inputfiles.clone().into_iter().map(|i| PathBuf::from(i)).collect::<Vec<PathBuf>>();
-    let overlay_fs = match ZffOverlayFs::new(inputfiles.to_owned(), &args.decryption_passwords) {
+    let mut overlay_fs = match ZffOverlayFs::new(inputfiles.to_owned(), &args.decryption_passwords) {
         Ok(overlay_fs) => {
             info!("MOUNT: Overlay filesystem created successfully");
             overlay_fs
@@ -194,7 +194,7 @@ fn main() {
                     };
                     files.push(f);
                 };
-                match ZffLogicalObjectFs::new(files, *object_number) {
+                match ZffLogicalObjectFs::new(files, *object_number, overlay_fs.passwords_per_object.get(object_number)) {
                     Ok(fs) => {
                         if overlay_fs.undecryptable_objects.contains(object_number) {
                             warn!("MOUNT: object {object_number}: still encrypted and could not be mount! (Wrong or missing password?)");
@@ -222,7 +222,7 @@ fn main() {
                     };
                     files.push(f);
                 };
-                match ZffPhysicalObjectFs::new(files, *object_number) {
+                match ZffPhysicalObjectFs::new(files, *object_number, overlay_fs.passwords_per_object.get(object_number)) {
                     Ok(fs) => {
                         if overlay_fs.undecryptable_objects.contains(object_number) {
                             warn!("MOUNT: object {object_number}: still encrypted and could not be mount! (Wrong or missing password?)");
@@ -239,6 +239,7 @@ fn main() {
             },
         }
     }
+    overlay_fs.remove_passwords();
 
     let mountpoint = PathBuf::from(&args.mount_point);
     let overlay_mountoptions = vec![MountOption::RW, MountOption::AllowRoot, MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME))];

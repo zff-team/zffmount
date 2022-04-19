@@ -36,6 +36,7 @@ use time::{OffsetDateTime};
 pub struct ZffOverlayFs {
     pub objects: HashMap<u64, FileAttr>, // <object_number, File attributes>
     pub undecryptable_objects: Vec<u64>, // <object number>,
+    pub passwords_per_object: HashMap<u64, String>,//<object number, password>,
     pub object_types_map: HashMap<u64, ObjectType>, // <object_number, object type>
     pub inode_attributes_map: HashMap<u64, FileAttr> //<inode, File attributes>
 }
@@ -98,7 +99,7 @@ impl ZffOverlayFs {
             let f = File::open(&path)?;
             files.push(f);
         };
-        let zffreader = ZffReader::new(files, passwords_per_object)?;
+        let zffreader = ZffReader::new(files, passwords_per_object.clone())?;
 
 
         let mut objects = HashMap::new();
@@ -154,11 +155,17 @@ impl ZffOverlayFs {
         let overlay_fs = Self {
             objects: objects,
             undecryptable_objects: undecryptable,
+            passwords_per_object: passwords_per_object,
             object_types_map: object_types_map,
             inode_attributes_map: inode_attributes_map,
         };
 
         Ok(overlay_fs)
+    }
+
+    pub fn remove_passwords(&mut self) {
+        //TODO: check if real zeroize is possible
+        self.passwords_per_object = HashMap::new()
     }
 }
 
@@ -267,9 +274,12 @@ pub struct ZffPhysicalObjectFs<R: Read + Seek> {
 }
 
 impl<R: Read + Seek> ZffPhysicalObjectFs<R> {
-    pub fn new(segments: Vec<R>, object_number: u64) -> Result<ZffPhysicalObjectFs<R>> {
-        //TODO: encrypted objects
-        let mut zffreader = ZffReader::new(segments, HashMap::new())?;
+    pub fn new(segments: Vec<R>, object_number: u64, decryption_password: Option<&String>) -> Result<ZffPhysicalObjectFs<R>> {
+        let mut decryption_map = HashMap::new();
+        if let Some(decryption_password) = decryption_password {
+            decryption_map.insert(object_number, decryption_password.to_string());
+        }
+        let mut zffreader = ZffReader::new(segments, decryption_map)?;
 
         let object = match zffreader.object(object_number) {
             Some(obj) => obj.clone(),
@@ -435,9 +445,12 @@ pub struct ZffLogicalObjectFs<R: Read + Seek> {
 }
 
 impl<R: Read + Seek> ZffLogicalObjectFs<R> {
-    pub fn new(segments: Vec<R>, object_number: u64) -> Result<ZffLogicalObjectFs<R>> {
-        //TODO: encrypted objects
-        let mut zffreader = ZffReader::new(segments, HashMap::new())?;
+    pub fn new(segments: Vec<R>, object_number: u64, decryption_password: Option<&String>) -> Result<ZffLogicalObjectFs<R>> {
+        let mut decryption_map = HashMap::new();
+        if let Some(decryption_password) = decryption_password {
+            decryption_map.insert(object_number, decryption_password.to_string());
+        }
+        let mut zffreader = ZffReader::new(segments, decryption_map)?;
 
         let object = match zffreader.object(object_number) {
             Some(obj) => obj.clone(),
