@@ -153,11 +153,11 @@ impl ZffOverlayFs {
         }
 
         let overlay_fs = Self {
-            objects: objects,
+            objects,
             undecryptable_objects: undecryptable,
-            passwords_per_object: passwords_per_object,
-            object_types_map: object_types_map,
-            inode_attributes_map: inode_attributes_map,
+            passwords_per_object,
+            object_types_map,
+            inode_attributes_map,
         };
 
         Ok(overlay_fs)
@@ -193,7 +193,7 @@ impl Filesystem for ZffOverlayFs {
         }
         for (index, entry) in entries.into_iter().skip(offset as usize).enumerate() {
             let (inode, file_type, name) = entry;
-            if reply.add(inode, offset + index as i64 + 1, file_type.into(), name) {
+            if reply.add(inode, offset + index as i64 + 1, file_type, name) {
                 break;
             }
         }
@@ -220,13 +220,11 @@ impl Filesystem for ZffOverlayFs {
                     Ok(object_number) => object_number,
                     Err(_) => {
                         //This is a workaround: Some Desktop environments trying to lookup for folders like ".Trash" or ".Trash-1000", but these do not exist.
-                        if unparsed_object_number == DEFAULT_TRASHFOLDER_NAME {
-                            reply.error(ENOENT);
-                            return;
-                        } else if unparsed_object_number == &format!("{DEFAULT_TRASHFOLDER_NAME}-{}", Uid::effective()) {
+                        if unparsed_object_number == DEFAULT_TRASHFOLDER_NAME || unparsed_object_number == format!("{DEFAULT_TRASHFOLDER_NAME}-{}", Uid::effective()) {
                             reply.error(ENOENT);
                             return;
                         }
+
                         debug!("LOOKUP: error while trying to parse the object: {unparsed_object_number}");
                         reply.error(ENOENT);
                         return;
@@ -241,7 +239,7 @@ impl Filesystem for ZffOverlayFs {
                 },
                 Some(file_attr) => file_attr,
             };
-            reply.entry(&TTL, &file_attr, DEFAULT_ENTRY_GENERATION);
+            reply.entry(&TTL, file_attr, DEFAULT_ENTRY_GENERATION);
         } else {
             debug!("LOOKUP: Parent ID {parent} not matching root inode dir {SPECIAL_INODE_ROOT_DIR}");
             reply.error(ENOENT);
@@ -308,7 +306,7 @@ impl<R: Read + Seek> ZffPhysicalObjectFs<R> {
         
         let file_attr = FileAttr {
             ino: ZFF_OBJECT_FS_PHYSICAL_ATTR_INO,
-            size: size,
+            size,
             blocks: size / DEFAULT_BLOCKSIZE as u64 + 1,
             atime: acquisition_end,
             mtime: acquisition_end,
@@ -343,10 +341,10 @@ impl<R: Read + Seek> ZffPhysicalObjectFs<R> {
         };
 
         Ok(Self {
-            object_number: object_number,
-            file_attr: file_attr,
-            object_file_attr: object_file_attr,
-            zffreader: zffreader
+            object_number,
+            file_attr,
+            object_file_attr,
+            zffreader
         })
     }
 }
@@ -357,10 +355,7 @@ impl<R: Read + Seek> Filesystem for ZffPhysicalObjectFs<R> {
             reply.entry(&TTL, &self.file_attr, DEFAULT_ENTRY_GENERATION);
         } else {
             //This is a workaround: Some Desktop environments trying to lookup for folders like ".Trash" or ".Trash-1000", but these do not exist.
-            if name.to_str() == Some(DEFAULT_TRASHFOLDER_NAME) {
-                reply.error(ENOENT);
-                return;
-            } else if name.to_str() == Some(&format!("{DEFAULT_TRASHFOLDER_NAME}-{}", Uid::effective())) {
+            if name.to_str() == Some(DEFAULT_TRASHFOLDER_NAME) || name.to_str() == Some(&format!("{DEFAULT_TRASHFOLDER_NAME}-{}", Uid::effective())) {
                 reply.error(ENOENT);
                 return;
             }
@@ -401,7 +396,7 @@ impl<R: Read + Seek> Filesystem for ZffPhysicalObjectFs<R> {
 
         for (index, entry) in entries.into_iter().skip(offset as usize).enumerate() {
             let (inode, file_type, name) = entry;
-            if reply.add(inode, offset + index as i64 + 1, file_type.into(), name) {
+            if reply.add(inode, offset + index as i64 + 1, file_type, name) {
                 break;
             }
         }
@@ -462,7 +457,7 @@ impl<R: Read + Seek> ZffLogicalObjectFs<R> {
             Object::Logical(object_info) => object_info,
         };
 
-        let initial_file_number = match object_info.footer().root_dir_filenumbers().into_iter().next() {
+        let initial_file_number = match object_info.footer().root_dir_filenumbers().iter().next() {
             Some(filenumber) => filenumber,
             None => return Err(ZffError::new(ZffErrorKind::MissingFileNumber, "")),
         };
@@ -501,9 +496,9 @@ impl<R: Read + Seek> ZffLogicalObjectFs<R> {
         };
 
         Ok(Self {
-            object_number: object_number,
-            object_file_attr: object_file_attr,
-            zffreader: zffreader,
+            object_number,
+            object_file_attr,
+            zffreader,
         })
     }
 
@@ -522,20 +517,17 @@ impl<R: Read + Seek> ZffLogicalObjectFs<R> {
             Err(_) => UNIX_EPOCH,
         };
 
-        match fileinformation.header().file_type() {
-            ZffFileType::Hardlink => {
-                self.zffreader.rewind()?;
-                let mut buffer = vec![0u8; size as usize];
-                self.zffreader.read(&mut buffer)?;
-                let mut cursor = Cursor::new(buffer);
-                filenumber = u64::decode_directly(&mut cursor)?;
-                let linked_fileinformation = {
-                    self.zffreader.set_reader_logical_object_file(self.object_number, filenumber)?;
-                    self.zffreader.file_information()?
-                };
-                size = linked_fileinformation.length_of_data();
-            },
-            _ => ()
+        if fileinformation.header().file_type() == ZffFileType::Hardlink {
+            self.zffreader.rewind()?;
+            let mut buffer = vec![0u8; size as usize];
+            self.zffreader.read_exact(&mut buffer)?;
+            let mut cursor = Cursor::new(buffer);
+            filenumber = u64::decode_directly(&mut cursor)?;
+            let linked_fileinformation = {
+                self.zffreader.set_reader_logical_object_file(self.object_number, filenumber)?;
+                self.zffreader.file_information()?
+            };
+            size = linked_fileinformation.length_of_data();
         };
         let kind = match fileinformation.header().file_type() {
             ZffFileType::File => FileType::RegularFile,
@@ -547,13 +539,13 @@ impl<R: Read + Seek> ZffLogicalObjectFs<R> {
 
         let file_attr = FileAttr {
             ino: filenumber+1, //TODO: handle hardlinks
-            size: size,
+            size,
             blocks: size / DEFAULT_BLOCKSIZE as u64 + 1,
             atime: acquisition_end,
             mtime: acquisition_end,
             ctime: acquisition_end,
             crtime: acquisition_start,
-            kind: kind,
+            kind,
             perm: ZFF_OBJECT_FS_PHYSICAL_ATTR_PERM, //TODO: handle permissions
             nlink: ZFF_OBJECT_FS_PHYSICAL_ATTR_NLINKS, //TODO: handle hardlinks
             blksize: DEFAULT_BLOCKSIZE,
@@ -771,7 +763,7 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
 
         for (index, entry) in entries.into_iter().skip(offset as usize).enumerate() {
             let (inode, file_type, name) = entry;
-            if reply.add(inode, offset + index as i64 + 1, file_type.into(), name) {
+            if reply.add(inode, offset + index as i64 + 1, file_type, name) {
                 break;
             }
         }
@@ -810,44 +802,41 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
                 return;
             }
         };
-        match fileinformation.header().file_type() {
-            ZffFileType::Hardlink => {
-                debug!("HARDLINK");
-                match self.zffreader.rewind() {
-                    Ok(_) => (),
-                    Err(_) => {
-                        reply.error(ENOENT);
-                        return;
-                    }
+        if fileinformation.header().file_type() == ZffFileType::Hardlink {
+            debug!("HARDLINK");
+            match self.zffreader.rewind() {
+                Ok(_) => (),
+                Err(_) => {
+                    reply.error(ENOENT);
+                    return;
                 }
-                let link_size = fileinformation.length_of_data();
-                let mut buffer = vec![0u8; link_size as usize];
-                match self.zffreader.read(&mut buffer) {
+            }
+            let link_size = fileinformation.length_of_data();
+            let mut buffer = vec![0u8; link_size as usize];
+            match self.zffreader.read(&mut buffer) {
+                Ok(_) => (),
+                Err(e) => {
+                    error!("READ: error: {e}");
+                    reply.error(ENOENT);
+                    return;
+                },
+            }
+            let mut cursor = Cursor::new(buffer);
+            match u64::decode_directly(&mut cursor) {
+                Ok(filenumber) => match self.zffreader.set_reader_logical_object_file(self.object_number, filenumber) {
                     Ok(_) => (),
-                    Err(e) => {
-                        error!("READ: error: {e}");
-                        reply.error(ENOENT);
-                        return;
-                    },
-                }
-                let mut cursor = Cursor::new(buffer);
-                match u64::decode_directly(&mut cursor) {
-                    Ok(filenumber) => match self.zffreader.set_reader_logical_object_file(self.object_number, filenumber) {
-                        Ok(_) => (),
-                        Err(e) => {
-                            error!("READ: {e}");
-                            reply.error(ENOENT);
-                            return;
-                        }
-                    },
                     Err(e) => {
                         error!("READ: {e}");
                         reply.error(ENOENT);
                         return;
                     }
+                },
+                Err(e) => {
+                    error!("READ: {e}");
+                    reply.error(ENOENT);
+                    return;
                 }
-            },
-            _ => (),
+            }
         };
         
         match self.zffreader.seek(SeekFrom::Start(offset as u64)) {
@@ -914,11 +903,10 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
         }
         let mut cursor = Cursor::new(string_buffer);
         match String::decode_directly(&mut cursor) {
-            Ok(path) => reply.data(&path.as_bytes()),
+            Ok(path) => reply.data(path.as_bytes()),
             Err(e) => {
                 error!("DECODE LINK PATH: {e}");
-                reply.error(ENOENT);
-                return;
+                reply.error(ENOENT);   
             }
         };
     }

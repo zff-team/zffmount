@@ -26,7 +26,6 @@ use lib::constants::*;
 use clap::{Parser, ArgEnum};
 use signal_hook::{consts::{SIGINT, SIGHUP, SIGTERM}, iterator::Signals};
 use log::{LevelFilter, info, error, warn};
-use env_logger;
 use fuser::{MountOption};
 
 
@@ -37,7 +36,7 @@ use fuser::{MountOption};
 #[clap(about, version, author)]
 pub struct Cli {
     /// The input files. This should be your zff image files. You can use this option multiple times.
-    #[clap(short='i', long="inputfiles", global=true, required=false)]
+    #[clap(short='i', long="inputfiles", global=true, required=false, multiple_values=true)]
     inputfiles: Vec<String>,
 
     /// The output format.
@@ -45,7 +44,7 @@ pub struct Cli {
     mount_point: PathBuf,
 
     /// The password(s), if the file(s) are encrypted. You can use this option multiple times to enter different passwords for different objects.
-    #[clap(short='p', long="decryption-password")]
+    #[clap(short='p', long="decryption-password", multiple_values=true)]
     decryption_passwords: Vec<String>,
 
     /// The Loglevel
@@ -63,7 +62,7 @@ enum LogLevel {
 }
 
 fn start_version1_fs(args: &Cli) {
-    let inputfiles = &args.inputfiles.clone().into_iter().map(|i| PathBuf::from(i)).collect::<Vec<PathBuf>>();
+    let inputfiles = &args.inputfiles.clone().into_iter().map(PathBuf::from).collect::<Vec<PathBuf>>();
     let mut files = Vec::new();
     for path in inputfiles {
         let f = match File::open(&path) {
@@ -162,17 +161,14 @@ fn main() {
         .filter_level(log_level)
         .init();
 
-    let inputfiles = &args.inputfiles.clone().into_iter().map(|i| PathBuf::from(i)).collect::<Vec<PathBuf>>();
+    let inputfiles = &args.inputfiles.clone().into_iter().map(PathBuf::from).collect::<Vec<PathBuf>>();
     let mut overlay_fs = match ZffOverlayFs::new(inputfiles.to_owned(), &args.decryption_passwords) {
         Ok(overlay_fs) => {
             info!("MOUNT: Overlay filesystem created successfully");
             overlay_fs
         },
         Err(e) => {
-            match e.get_kind() {
-                ZffErrorKind::HeaderDecodeMismatchIdentifier => start_version1_fs(&args),
-                _ => (),
-            }
+            if let ZffErrorKind::HeaderDecodeMismatchIdentifier = e.get_kind() { start_version1_fs(&args) }
             error!("MOUNT: Could not create overlay filesystem: {e}");
             exit(EXIT_STATUS_ERROR);
         }

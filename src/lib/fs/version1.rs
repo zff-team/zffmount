@@ -80,7 +80,7 @@ impl Serialize for ZffInfo {
         state.serialize_field("compression_algorithm", &self.0.compression_header().algorithm().to_string())?;
         state.serialize_field("compression_level", &self.0.compression_header().level())?;
 
-        if let Some(_) = self.0.encryption_header() {
+        if self.0.encryption_header().is_some() {
             state.serialize_field("encrypted", &true)?;
         } else {
             state.serialize_field("encrypted", &false)?;
@@ -110,13 +110,13 @@ pub struct ZffFS<R: 'static +  Read + Seek> {
 impl<R: Read + Seek> ZffFS<R> {
     pub fn new(mut data: Vec<R>) -> Result<ZffFS<R>> {
         let main_header = MainHeader::decode_directly(&mut data[0])?;
-        if let Some(_) = main_header.encryption_header() {
+        if main_header.encryption_header().is_some() {
             data[0].rewind()?;
             return Err(ZffError::new(ZffErrorKind::MissingEncryptionKey, ERROR_MISSING_ENCRYPTION_KEY));
         };
         let zff_reader = ZffReader::new(data, main_header)?;
         Ok(Self {
-            zff_reader: zff_reader,
+            zff_reader,
         })
     }
 
@@ -134,7 +134,7 @@ impl<R: Read + Seek> ZffFS<R> {
         let mut zff_reader = ZffReader::new(data, main_header)?;
         zff_reader.decrypt_encryption_key(password)?;
         Ok(Self {
-            zff_reader: zff_reader,
+            zff_reader,
         })
     }
 
@@ -147,7 +147,8 @@ impl<R: Read + Seek> ZffFS<R> {
                 exit(EXIT_STATUS_ERROR);
             }
         };
-        let attr = FileAttr {
+        
+        FileAttr {
             ino: DEFAULT_VERSION1_METADATA_INODE,
             size: serialized_data.len() as u64,
             blocks: serialized_data.len() as u64 / DEFAULT_BLOCKSIZE as u64 + 1,
@@ -163,29 +164,29 @@ impl<R: Read + Seek> ZffFS<R> {
             rdev: 0,
             flags: 0,
             blksize: DEFAULT_BLOCKSIZE,
-        };
-        attr
+        }
     }
 
     fn zff_image_fileattr(&self) -> FileAttr {
         let size = self.zff_reader.main_header().length_of_data();
         let acquisition_start = match self.zff_reader.main_header().description_header().acquisition_start() {
             0 => UNIX_EPOCH,
-            start @ _ => match OffsetDateTime::from_unix_timestamp(start as i64) {
+            start => match OffsetDateTime::from_unix_timestamp(start as i64) {
                 Ok(time) => time.into(),
                 Err(_) => UNIX_EPOCH,
             },
         };
         let acquisition_end = match self.zff_reader.main_header().description_header().acquisition_end() {
             0 => UNIX_EPOCH,
-            end @ _ => match OffsetDateTime::from_unix_timestamp(end as i64) {
+            end => match OffsetDateTime::from_unix_timestamp(end as i64) {
                 Ok(time) => time.into(),
                 Err(_) => UNIX_EPOCH,
             },
         };
-        let attr = FileAttr {
+        
+        FileAttr {
             ino: DEFAULT_VERSION1_ZFFIMAGE_INODE,
-            size: size,
+            size,
             blocks: size / DEFAULT_BLOCKSIZE as u64 + 1,
             atime: acquisition_end, // 1970-01-01 00:00:00
             mtime: acquisition_end,
@@ -199,8 +200,7 @@ impl<R: Read + Seek> ZffFS<R> {
             rdev: 0,
             flags: 0,
             blksize: DEFAULT_BLOCKSIZE,
-        };
-        attr
+        }
     }
 
     //TODO return Result<String>.
