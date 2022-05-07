@@ -21,7 +21,7 @@ use zff::{
 use crate::lib::constants::*;
 
 // - external
-use log::{error, debug};
+use log::{error, debug, info, warn};
 
 // - external
 use fuser::{
@@ -51,48 +51,41 @@ impl ZffOverlayFs {
         };
 
         let temp_zffreader = ZffReader::new(files, HashMap::new())?;
-        let object_numbers = temp_zffreader.object_numbers();
 
         //check encryption and try to decrypt
-        let mut undecryptable = Vec::new();
         let mut passwords_per_object = HashMap::new();
-        for object in temp_zffreader.objects() {
-            let object_number = object.object_number();
-            match object.encryption_header() {
-                None => (),
-                Some(_) => {
-                    for password in decryption_passwords {
-                        let mut files = Vec::new();
-                        for path in &inputfiles {
-                            let f = File::open(&path)?;
-                            files.push(f);
-                        };
-                        let mut obj_decryption_password_map = HashMap::new();
-                        obj_decryption_password_map.insert(object_number, password.clone());
-                        let mut temp_zffreader = match ZffReader::new(files, obj_decryption_password_map) {
-                            Ok(reader) => reader,
-                            Err(e) => match e.get_kind() {
-                                ZffErrorKind::HeaderDecodeEncryptedHeader => {
-                                    continue;
-                                },
-                                ZffErrorKind::PKCS5CryptoError => {
-                                    continue;
-                                }
-                                _ => return Err(e),
-                            }
-                        };
-                        match temp_zffreader.check_decryption(object_number) {
-                            Err(e) => return Err(e),
-                            Ok(value) => if value { passwords_per_object.insert(object_number, password.clone()); },
-                        };
-                    }
-                    if !passwords_per_object.contains_key(&object_number) {
-                        undecryptable.push(object_number)
-                    }
+
+        for object_number in temp_zffreader.undecryptable_objects() {
+            info!("MOUNT: Trying to decrypt object {object_number} ...");
+            let mut decryption_state = false;
+            'inner:  for password in decryption_passwords {
+                let mut temp_pw_map = HashMap::new();
+                temp_pw_map.insert(*object_number, password.to_string());
+
+                let mut files = Vec::new();
+                for path in &inputfiles {
+                    let f = File::open(&path)?;
+                    files.push(f);
+                };
+                let inner_temp_zffreader = match ZffReader::new(files, temp_pw_map) {
+                    Ok(zffreader) => zffreader,
+                    Err(e) => match e.get_kind() {
+                        ZffErrorKind::PKCS5CryptoError => continue,
+                        _ => return Err(e)
+                    },
+                };
+                if !inner_temp_zffreader.undecryptable_objects().contains(object_number) {
+                    passwords_per_object.insert(*object_number, password.to_string());
+                    decryption_state = true;
+                    break 'inner;
                 }
             }
+            if decryption_state {
+                info!("MOUNT: ... done. Decryption of object {object_number} was successful.");
+            } else {
+                warn!("MOUNT: ... failed. Could not decrypt object {object_number} successfully.");
+            }
         }
-
 
         let mut files = Vec::new();
         for path in &inputfiles {
@@ -100,8 +93,7 @@ impl ZffOverlayFs {
             files.push(f);
         };
         let zffreader = ZffReader::new(files, passwords_per_object.clone())?;
-
-
+        let object_numbers = zffreader.object_numbers();
         let mut objects = HashMap::new();
         let mut object_types_map = HashMap::new();
         let mut inode_attributes_map = HashMap::new();
@@ -154,12 +146,11 @@ impl ZffOverlayFs {
 
         let overlay_fs = Self {
             objects,
-            undecryptable_objects: undecryptable,
+            undecryptable_objects: zffreader.undecryptable_objects().to_vec(),
             passwords_per_object,
             object_types_map,
             inode_attributes_map,
         };
-
         Ok(overlay_fs)
     }
 
@@ -605,7 +596,7 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
             let childs = match Vec::<u64>::decode_directly(&mut cursor) {
                     Ok(childs) => childs,
                     Err(e) => {
-                        error!("Error: {e}");
+                        error!("LOOKUP: {e}");
                         reply.error(ENOENT);
                         return;
                 },
@@ -666,7 +657,7 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
         mut reply: ReplyDirectory,
     ) {
         let mut entries = Vec::new();
-        debug!("Start readdir");
+        debug!("READDIR: Start readdir of inode {ino}");
         let childs = if ino == SPECIAL_INODE_ROOT_DIR {
             entries.push((SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(CURRENT_DIR)));
             entries.push((SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(PARENT_DIR)));
@@ -719,7 +710,7 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
             let childs = match Vec::<u64>::decode_directly(&mut cursor) {
                     Ok(childs) => childs,
                     Err(e) => {
-                        error!("Error: {e}");
+                        error!("READDIR: {e}");
                         reply.error(ENOENT);
                         return;
                 },
@@ -803,7 +794,6 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
             }
         };
         if fileinformation.header().file_type() == ZffFileType::Hardlink {
-            debug!("HARDLINK");
             match self.zffreader.rewind() {
                 Ok(_) => (),
                 Err(_) => {
@@ -905,7 +895,7 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
         match String::decode_directly(&mut cursor) {
             Ok(path) => reply.data(path.as_bytes()),
             Err(e) => {
-                error!("DECODE LINK PATH: {e}");
+                error!("READ: DECODE LINK PATH: {e}");
                 reply.error(ENOENT);   
             }
         };

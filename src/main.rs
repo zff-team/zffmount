@@ -69,7 +69,7 @@ fn start_version1_fs(args: &Cli) {
             Ok(f) => f,
             Err(e) => {
                 let path_name = &path.to_string_lossy();
-                error!("Could not open file {path_name}: {e}");
+                error!("VERSION1_FS: Could not open file {path_name}: {e}");
                 exit(EXIT_STATUS_ERROR);
             },
         };
@@ -80,7 +80,7 @@ fn start_version1_fs(args: &Cli) {
         Err(e) => match e.get_kind() {
             ZffErrorKind::MissingEncryptionKey => {
                 if args.decryption_passwords.len() as u64 != 1 {
-                    error!("{ERROR_MISSING_ENCRYPTION_KEY}");
+                    error!("VERSION1_FS: {ERROR_MISSING_ENCRYPTION_KEY}");
                     exit(EXIT_STATUS_ERROR);
 
                 }
@@ -92,7 +92,7 @@ fn start_version1_fs(args: &Cli) {
                         Ok(f) => f,
                         Err(e) => {
                             let path_name = &path.to_string_lossy();
-                            error!("Could not open file {path_name}: {e}");
+                            error!("VERSION1_FS: Could not open file {path_name}: {e}");
                             exit(EXIT_STATUS_ERROR);
                         },
                     };
@@ -101,7 +101,7 @@ fn start_version1_fs(args: &Cli) {
                 match ZffFS::new_encrypted(files, password) {
                     Ok(zff_fs) => zff_fs,
                     Err(e) => {
-                        error!("Error while trying to mount encrypted object: {e}");
+                        error!("VERSION1_FS: Error while trying to mount encrypted object: {e}");
                         exit(EXIT_STATUS_ERROR);
                     }
                 }
@@ -116,14 +116,14 @@ fn start_version1_fs(args: &Cli) {
     let session = match fuser::spawn_mount2(zff_fs, &args.mount_point, &mountoptions) {
         Ok(session) => session,
         Err(e) => {
-            error!("could not mount ZffFs filesystem: {e}");
+            error!("VERSION1_FS: could not mount ZffFs filesystem: {e}");
             exit(EXIT_STATUS_ERROR);
         }
     };
     let mut signals = match Signals::new(&[SIGINT, SIGHUP, SIGTERM]) {
         Ok(signals) => signals,
         Err(e) => {
-            error!("{ERROR_SETTING_SIGNAL_HANDLER}{e}");
+            error!("VERSION1_FS: {ERROR_SETTING_SIGNAL_HANDLER}{e}");
             exit(EXIT_STATUS_ERROR);
         },
     };
@@ -131,7 +131,7 @@ fn start_version1_fs(args: &Cli) {
     let r = Arc::clone(&running);
     thread::spawn(move || {
         for sig in signals.forever() {
-            info!("Received shutdown signal {:?}. The filesystems will be unmounted, as soon as the resource is no longer busy.", sig);
+            info!("VERSION1_FS: Received shutdown signal {:?}. The filesystems will be unmounted, as soon as the resource is no longer busy.", sig);
             r.store(true, Ordering::SeqCst);
         }
     });
@@ -184,21 +184,14 @@ fn main() {
                         Ok(f) => f,
                         Err(e) => {
                             let path_name = &path.to_string_lossy();
-                            error!("Could not open file {path_name}: {e}");
+                            error!("MOUNT: Could not open file {path_name}: {e}");
                             exit(EXIT_STATUS_ERROR);
                         },
                     };
                     files.push(f);
                 };
                 match ZffLogicalObjectFs::new(files, *object_number, overlay_fs.passwords_per_object.get(object_number)) {
-                    Ok(fs) => {
-                        if overlay_fs.undecryptable_objects.contains(object_number) {
-                            warn!("MOUNT: object {object_number}: still encrypted and could not be mount! (Wrong or missing password?)");
-                        } else {
-                            object_fs_vec.push(ZffObjectFs::Logical(fs));
-                            info!("MOUNT: Object filesystem for object {object_number} created successfully");
-                        }
-                    },
+                    Ok(fs) => object_fs_vec.push(ZffObjectFs::Logical(fs)),
                     Err(e) => {
                         error!("MOUNT: could not create object filesystem for object number {object_number}: {e}");
                         exit(EXIT_STATUS_ERROR);
@@ -212,21 +205,14 @@ fn main() {
                         Ok(f) => f,
                         Err(e) => {
                             let path_name = &path.to_string_lossy();
-                            error!("Could not open file {path_name}: {e}");
+                            error!("MOUNT: Could not open file {path_name}: {e}");
                             exit(EXIT_STATUS_ERROR);
                         },
                     };
                     files.push(f);
                 };
                 match ZffPhysicalObjectFs::new(files, *object_number, overlay_fs.passwords_per_object.get(object_number)) {
-                    Ok(fs) => {
-                        if overlay_fs.undecryptable_objects.contains(object_number) {
-                            warn!("MOUNT: object {object_number}: still encrypted and could not be mount! (Wrong or missing password?)");
-                        } else {
-                            object_fs_vec.push(ZffObjectFs::Physical(fs));
-                            info!("MOUNT: Object filesystem for object {object_number} created successfully");
-                        }
-                    },
+                    Ok(fs) => object_fs_vec.push(ZffObjectFs::Physical(fs)),
                     Err(e) => {
                         error!("MOUNT: could not create object filesystem for object number {object_number}: {e}");
                         exit(EXIT_STATUS_ERROR);
@@ -241,13 +227,17 @@ fn main() {
     let overlay_mountoptions = vec![MountOption::RW, MountOption::AllowRoot, MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME))];
     let object_mountoptions = vec![MountOption::RO, MountOption::FSName(String::from(ZFF_OBJECT_FS_NAME))];
 
+    let undecryptable_objects = &overlay_fs.undecryptable_objects.clone();
     let overlay_session = match fuser::spawn_mount2(overlay_fs, &mountpoint, &overlay_mountoptions) {
         Ok(session) => session,
         Err(e) => {
-            error!("could not mount overlay filesystem: {e}");
+            error!("MOUNT: could not mount overlay filesystem: {e}");
             exit(EXIT_STATUS_ERROR);
         }
     };
+    for object_number in undecryptable_objects {
+        warn!("MOUNT: object {object_number}: still encrypted and could not be mount! (Wrong or missing password?)"); 
+    }
 
     let mut object_fs_sessions = Vec::new();
     for object_fs in object_fs_vec {
@@ -259,7 +249,7 @@ fn main() {
                 let session = match fuser::spawn_mount2(object_fs, inner_mountpoint, &object_mountoptions) {
                     Ok(session) => session,
                     Err(e) => {
-                        error!("could not mount object filesystem for object number {object_number}: {e}");
+                        error!("MOUNT: could not mount object filesystem for object number {object_number}: {e}");
                         exit(EXIT_STATUS_ERROR);
                     },
                 };
@@ -271,7 +261,7 @@ fn main() {
                 let session = match fuser::spawn_mount2(object_fs, inner_mountpoint, &object_mountoptions) {
                     Ok(session) => session,
                     Err(e) => {
-                        error!("could not mount object filesystem for object number {object_number}: {e}");
+                        error!("MOUNT: could not mount object filesystem for object number {object_number}: {e}");
                         exit(EXIT_STATUS_ERROR);
                     },
                 };
@@ -284,7 +274,7 @@ fn main() {
     let mut signals = match Signals::new(&[SIGINT, SIGHUP, SIGTERM]) {
         Ok(signals) => signals,
         Err(e) => {
-            error!("{ERROR_SETTING_SIGNAL_HANDLER}{e}");
+            error!("MOUNT: {ERROR_SETTING_SIGNAL_HANDLER}{e}");
             exit(EXIT_STATUS_ERROR);
         },
     };
@@ -292,7 +282,7 @@ fn main() {
     let r = Arc::clone(&running);
     thread::spawn(move || {
         for sig in signals.forever() {
-            warn!("Received shutdown signal {:?}. The filesystems will be unmounted, as soon as the resource is no longer busy.", sig);
+            warn!("UNMOUNT: Received shutdown signal {:?}. The filesystems will be unmounted, as soon as the resource is no longer busy.", sig);
             r.store(true, Ordering::SeqCst);
         }
     });
