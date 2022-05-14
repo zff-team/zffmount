@@ -13,7 +13,7 @@ confinement: classic
 parts:
   zffmount:
     build-packages: [ gcc, fuse, libfuse-dev, pkg-config ]
-    stage-packages: [ libfuse ]
+    stage-packages: [ libfuse2 ]
     plugin: rust
     source: https://github.com/ph0llux/zffmount.git
     override-pull: |
