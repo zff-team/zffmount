@@ -12,7 +12,8 @@ base: core20
 confinement: classic
 parts:
   zffmount:
-    build-packages: [ gcc, fuse3, libfuse-dev, pkg-config ]
+    build-packages: [ gcc, fuse, libfuse-dev, pkg-config ]
+    stage-packages: [ libfuse ]
     plugin: rust
     source: https://github.com/ph0llux/zffmount.git
     override-pull: |
