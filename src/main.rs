@@ -225,7 +225,7 @@ fn main() {
 
     let mountpoint = PathBuf::from(&args.mount_point);
     let overlay_mountoptions = vec![MountOption::RW, MountOption::AllowRoot, MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME))];
-    let object_mountoptions = vec![MountOption::RO, MountOption::FSName(String::from(ZFF_OBJECT_FS_NAME))];
+    let object_mountoptions = vec![MountOption::RO, MountOption::AllowRoot, MountOption::FSName(String::from(ZFF_OBJECT_FS_NAME))];
 
     let undecryptable_objects = &overlay_fs.undecryptable_objects.clone();
     let overlay_session = match fuser::spawn_mount2(overlay_fs, &mountpoint, &overlay_mountoptions) {
