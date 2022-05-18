@@ -552,7 +552,7 @@ impl<R: Read + Seek> ZffLogicalObjectFs<R> {
 
 impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        let childs = if parent == SPECIAL_INODE_ROOT_DIR {
+        let children = if parent == SPECIAL_INODE_ROOT_DIR {
             match self.zffreader.object(self.object_number) {
                 Some(Object::Logical(obj_info)) => obj_info.footer().root_dir_filenumbers().to_owned(),
                 _ => {
@@ -592,18 +592,22 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
                     return;
                 },
             }
-            let mut cursor = Cursor::new(buffer);
-            let childs = match Vec::<u64>::decode_directly(&mut cursor) {
-                    Ok(childs) => childs,
-                    Err(e) => {
-                        error!("LOOKUP: {e}");
-                        reply.error(ENOENT);
-                        return;
-                },
-            };
-            childs
+            if buffer.is_empty() {
+                Vec::new()
+            } else {
+                let mut cursor = Cursor::new(&buffer);
+                let children = match Vec::<u64>::decode_directly(&mut cursor) {
+                        Ok(children) => children,
+                        Err(e) => {
+                            error!("LOOKUP: {e}");
+                            reply.error(ENOENT);
+                            return;
+                    },
+                };
+                children
+            }
         };
-        for filenumber in childs {
+        for filenumber in children {
             match self.zffreader.set_reader_logical_object_file(self.object_number, filenumber) {
                 Ok(_) => (),
                 Err(_) => {
@@ -658,7 +662,7 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
     ) {
         let mut entries = Vec::new();
         debug!("READDIR: Start readdir of inode {ino}");
-        let childs = if ino == SPECIAL_INODE_ROOT_DIR {
+        let children = if ino == SPECIAL_INODE_ROOT_DIR {
             entries.push((SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(CURRENT_DIR)));
             entries.push((SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(PARENT_DIR)));
             let filenumbers = match self.zffreader.object(self.object_number).unwrap() {
@@ -706,20 +710,24 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
                     return;
                 },
             }
-            let mut cursor = Cursor::new(buffer);
-            let childs = match Vec::<u64>::decode_directly(&mut cursor) {
-                    Ok(childs) => childs,
-                    Err(e) => {
-                        error!("READDIR: {e}");
-                        reply.error(ENOENT);
-                        return;
-                },
-            };
-            childs
+            if buffer.is_empty() {
+                Vec::new()
+            } else {
+                let mut cursor = Cursor::new(&buffer);
+                let children = match Vec::<u64>::decode_directly(&mut cursor) {
+                        Ok(children) => children,
+                        Err(e) => {
+                            error!("READDIR: {e}");
+                            reply.error(ENOENT);
+                            return;
+                    },
+                };
+                children
+            }
         };
-        debug!("READDIR: childs in dir: {:?}", childs);
+        debug!("READDIR: children in dir: {:?}", children);
 
-        for child_filenumber in childs {
+        for child_filenumber in children {
             let fileinformation = match self.zffreader.set_reader_logical_object_file(self.object_number, child_filenumber) {
                 Ok(_) => match self.zffreader.file_information() {
                     Ok(fileinformation) => fileinformation,
