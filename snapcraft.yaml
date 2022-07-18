@@ -9,7 +9,7 @@ description: |
   with forensic requirements. The modular design promises high maintainability and scalability. Zff is an alternative 
   to the ewf and aff file formats and is not compatible with them.
 base: core20
-confinement: classic
+confinement: strict
 parts:
   zffmount:
     build-packages: [ gcc, fuse, libfuse-dev, pkg-config ]
@@ -25,5 +25,9 @@ parts:
 apps:
   zffmount:
     command: bin/zffmount
+    plugs:
+      - home
+      - system-backup
+      - fuse-support
 architectures:
   - build-on: [amd64,arm64]
