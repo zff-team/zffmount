@@ -22,7 +22,7 @@ Then you can easily build this tool yourself by using cargo:
 ```
 Or you can install the tool directly from crates.io:
 ```bash
-$ cargo install zffmount
+$ cargo install --version 1.0.0-rc.1 zffmount
 ```
 
 # Usage
