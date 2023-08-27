@@ -1,4 +1,5 @@
 // - STD
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -10,17 +11,18 @@ use std::fs::{File};
 
 
 // - modules
-mod lib;
+mod fs;
+mod constants;
+mod addons;
 
 // - internal
-use lib::fs::{version2::*, version1::*};
+use fs::*;
+use constants::*;
+use addons::*;
+
 use zff::{
     header::*,
-    ZffErrorKind,
 };
-
-
-use lib::constants::*;
 
 // - external
 use clap::{Parser, ArgEnum};
@@ -37,15 +39,16 @@ use fuser::{MountOption};
 pub struct Cli {
     /// The input files. This should be your zff image files. You can use this option multiple times.
     #[clap(short='i', long="inputfiles", global=true, required=false, multiple_values=true)]
-    inputfiles: Vec<String>,
+    inputfiles: Vec<PathBuf>,
 
     /// The output format.
     #[clap(short='m', long="mount-point")]
     mount_point: PathBuf,
 
     /// The password(s), if the file(s) are encrypted. You can use this option multiple times to enter different passwords for different objects.
-    #[clap(short='p', long="decryption-password", multiple_values=true)]
-    decryption_passwords: Vec<String>,
+    #[clap(short='p', long="decryption-passwords", value_parser = parse_key_val::<String, String>)]
+    decryption_passwords: Vec<(String, String)>,
+
 
     /// The Loglevel
     #[clap(short='l', long="log-level", arg_enum, default_value="info")]
@@ -61,94 +64,26 @@ enum LogLevel {
     Trace
 }
 
-fn start_version1_fs(args: &Cli) {
-    let inputfiles = &args.inputfiles.clone().into_iter().map(PathBuf::from).collect::<Vec<PathBuf>>();
-    let mut files = Vec::new();
-    for path in inputfiles {
-        let f = match File::open(&path) {
-            Ok(f) => f,
+fn open_files(args: &Cli) -> Vec<File> {
+    let input_paths = &args.inputfiles.clone();
+    let mut inputfiles = Vec::new();
+    info!("Opening {} segment files.", inputfiles.len());
+    for path in input_paths {
+        let file = match File::open(path) {
+            Ok(file) => file,
             Err(e) => {
-                let path_name = &path.to_string_lossy();
-                error!("VERSION1_FS: Could not open file {path_name}: {e}");
+                error!("{e}");
                 exit(EXIT_STATUS_ERROR);
             },
         };
-        files.push(f);
-    };
-    let zff_fs = match ZffFS::new(files) {
-        Ok(zff_fs) => zff_fs,
-        Err(e) => match e.get_kind() {
-            ZffErrorKind::MissingEncryptionKey => {
-                if args.decryption_passwords.len() as u64 != 1 {
-                    error!("VERSION1_FS: {ERROR_MISSING_ENCRYPTION_KEY}");
-                    exit(EXIT_STATUS_ERROR);
-
-                }
-                let password = &args.decryption_passwords[0];
-                
-                let mut files = Vec::new();
-                for path in inputfiles {
-                    let f = match File::open(&path) {
-                        Ok(f) => f,
-                        Err(e) => {
-                            let path_name = &path.to_string_lossy();
-                            error!("VERSION1_FS: Could not open file {path_name}: {e}");
-                            exit(EXIT_STATUS_ERROR);
-                        },
-                    };
-                    files.push(f);
-                };
-                match ZffFS::new_encrypted(files, password) {
-                    Ok(zff_fs) => zff_fs,
-                    Err(e) => {
-                        error!("VERSION1_FS: Error while trying to mount encrypted object: {e}");
-                        exit(EXIT_STATUS_ERROR);
-                    }
-                }
-            },
-            other => {
-                error!("MOUNT: Error while trying to mount filesystem: {other}");
-                exit(EXIT_STATUS_ERROR);
-            },
-        }
-    };
-    let mountoptions = vec![MountOption::RO, MountOption::FSName(String::from(ZFF_VERSION1_IMAGE_FS_NAME))];
-    let session = match fuser::spawn_mount2(zff_fs, &args.mount_point, &mountoptions) {
-        Ok(session) => session,
-        Err(e) => {
-            error!("VERSION1_FS: could not mount ZffFs filesystem: {e}");
-            exit(EXIT_STATUS_ERROR);
-        }
-    };
-    let mut signals = match Signals::new(&[SIGINT, SIGHUP, SIGTERM]) {
-        Ok(signals) => signals,
-        Err(e) => {
-            error!("VERSION1_FS: {ERROR_SETTING_SIGNAL_HANDLER}{e}");
-            exit(EXIT_STATUS_ERROR);
-        },
-    };
-    let running = Arc::new(AtomicBool::new(false));
-    let r = Arc::clone(&running);
-    thread::spawn(move || {
-        for sig in signals.forever() {
-            info!("VERSION1_FS: Received shutdown signal {:?}. The filesystems will be unmounted, as soon as the resource is no longer busy.", sig);
-            r.store(true, Ordering::SeqCst);
-        }
-    });
-
-    loop {
-        if running.load(Ordering::SeqCst) {
-            session.join();
-            exit(EXIT_STATUS_SUCCESS);
-        }
+        inputfiles.push(file);
     }
-
+    inputfiles
 }
 
 fn main() {
     let args = Cli::parse();
 
-    //TODO: remove or use correctly
     let log_level = match args.log_level {
         LogLevel::Error => LevelFilter::Error,
         LogLevel::Warn => LevelFilter::Warn,
@@ -161,14 +96,28 @@ fn main() {
         .filter_level(log_level)
         .init();
 
-    let inputfiles = &args.inputfiles.clone().into_iter().map(PathBuf::from).collect::<Vec<PathBuf>>();
+    let inputfiles = open_files(&args);
+    let mut decryption_passwords = HashMap::new();
+    for (obj_no, pw) in args.decryption_passwords {
+        let obj_no = match obj_no.parse::<u64>() {
+            Ok(no) => no,
+            Err(e) => {
+                error!("Could not parse object number {obj_no}: {e}");
+                exit(EXIT_STATUS_ERROR);
+            }
+        };
+        decryption_passwords.insert(obj_no, pw);
+    }
+
+    let overlay_fs = ZffFs::new(inputfiles, &decryption_passwords);
+
+    /*
     let mut overlay_fs = match ZffOverlayFs::new(inputfiles.to_owned(), &args.decryption_passwords) {
         Ok(overlay_fs) => {
             info!("MOUNT: Overlay filesystem created successfully");
             overlay_fs
         },
         Err(e) => {
-            if let ZffErrorKind::HeaderDecodeMismatchIdentifier = e.get_kind() { start_version1_fs(&args) }
             error!("MOUNT: Could not create overlay filesystem: {e}");
             exit(EXIT_STATUS_ERROR);
         }
@@ -180,7 +129,7 @@ fn main() {
             ObjectType::Logical => {
                 let mut files = Vec::new();
                 for path in inputfiles {
-                    let f = match File::open(&path) {
+                    let f = match File::open(path) {
                         Ok(f) => f,
                         Err(e) => {
                             let path_name = &path.to_string_lossy();
@@ -201,7 +150,7 @@ fn main() {
             ObjectType::Physical => {
                 let mut files = Vec::new();
                 for path in inputfiles {
-                    let f = match File::open(&path) {
+                    let f = match File::open(path) {
                         Ok(f) => f,
                         Err(e) => {
                             let path_name = &path.to_string_lossy();
@@ -224,8 +173,8 @@ fn main() {
     overlay_fs.remove_passwords();
 
     let mountpoint = PathBuf::from(&args.mount_point);
-    let overlay_mountoptions = vec![MountOption::RW, MountOption::AllowRoot, MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME))];
-    let object_mountoptions = vec![MountOption::RO, MountOption::AllowRoot, MountOption::FSName(String::from(ZFF_OBJECT_FS_NAME))];
+    let overlay_mountoptions = vec![MountOption::RW, MountOption::AllowOther, MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME))];
+    let object_mountoptions = vec![MountOption::RO, MountOption::AllowOther, MountOption::FSName(String::from(ZFF_OBJECT_FS_NAME))];
 
     let undecryptable_objects = &overlay_fs.undecryptable_objects.clone();
     let overlay_session = match fuser::spawn_mount2(overlay_fs, &mountpoint, &overlay_mountoptions) {
@@ -271,7 +220,7 @@ fn main() {
         
     }
 
-    let mut signals = match Signals::new(&[SIGINT, SIGHUP, SIGTERM]) {
+    let mut signals = match Signals::new([SIGINT, SIGHUP, SIGTERM]) {
         Ok(signals) => signals,
         Err(e) => {
             error!("MOUNT: {ERROR_SETTING_SIGNAL_HANDLER}{e}");
@@ -295,5 +244,5 @@ fn main() {
             overlay_session.join();
             exit(EXIT_STATUS_SUCCESS);
         }
-    }
+    }*/
 }

@@ -48,10 +48,6 @@ pub(crate) const DEFAULT_BLOCKSIZE: u32 = 512;
 pub(crate) const ZFF_PHYSICAL_OBJECT_NAME: &str = "zff_image.dd";
 
 pub(crate) const DEFAULT_READONLY_PERMISSIONS_REGULAR_FILE: u16 = 0o555;
-pub(crate) const DEFAULT_VERSION1_METADATA_INODE: u64 = 2;
-pub(crate) const DEFAULT_VERSION1_ZFFIMAGE_INODE: u64 = 3;
-pub(crate) const DEFAULT_VERSION1_METADATA_NAME: &str = "metadata.toml";
-pub(crate) const DEFAULT_VERSION1_ZFF_IMAGE_NAME: &str = "zff_image.dd";
 
 pub(crate) const DEFAULT_TRASHFOLDER_NAME: &str = ".Trash";
 
@@ -63,3 +59,6 @@ pub(crate) const TTL: Duration = Duration::from_secs(1); // 1 second
 // special paths
 pub(crate) const CURRENT_DIR: &str = ".";
 pub(crate) const PARENT_DIR: &str = "..";
+
+// prefix
+pub(crate) const OBJECT_PATH_PREFIX: &str = "object_";

@@ -1,4 +1,6 @@
 // - STD
+use std::collections::BTreeMap;
+use std::process::exit;
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::fs::{File};
@@ -7,18 +9,17 @@ use std::io::{Read, Seek, SeekFrom, Cursor};
 use std::collections::HashMap;
 
 // - internal
+use super::constants::*;
 use zff::{
     Result,
-    header::{ObjectType, FileType as ZffFileType},
+    header::{ObjectType, FileType as ZffFileType, SpecialFileType as ZffSpecialFileType},
+    footer::{ObjectFooter},
     ValueDecoder,
-    ZffReader,
+    io::zffreader::{ZffReader, ObjectType as ZffReaderObjectType, FileMetadata},
     ZffError,
     ZffErrorKind,
     Object,
 };
-
-
-use crate::lib::constants::*;
 
 // - external
 use log::{error, debug, info, warn};
@@ -31,7 +32,243 @@ use fuser::{
 use nix::unistd::{Uid, Gid};
 use libc::ENOENT;
 use time::{OffsetDateTime};
+use dialoguer::{theme::ColorfulTheme, Password as PasswordDialog};
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct ZffFsCache {
+    pub object_list: BTreeMap<u64, ZffReaderObjectType>,
+    pub inode_reverse_map: BTreeMap<u64, (u64, u64)>, //<Inode, (object number, file number)
+}
+
+impl ZffFsCache {
+    fn with_data(
+        object_list: BTreeMap<u64, ZffReaderObjectType>,
+        inode_reverse_map: BTreeMap<u64, (u64, u64)>) -> Self 
+    {
+        Self {
+            object_list,
+            inode_reverse_map
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ZffFs<R: Read + Seek> {
+    zffreader: ZffReader<R>,
+    shift_value: u64,
+    cache: ZffFsCache,
+}
+
+impl<R: Read + Seek> ZffFs<R> {
+    pub fn new(inputfiles: Vec<R>, decryption_passwords: &HashMap<u64, String>) -> Self {
+        info!("Reading segment files to create initial ZffReader.");
+        let mut zffreader = match ZffReader::with_reader(inputfiles) {
+            Ok(reader) => reader,
+            Err(e) => {
+                error!("An error occurred while trying to create the ZffReader: {e}");
+                exit(EXIT_STATUS_ERROR);
+            }
+        };
+
+        let object_list = match zffreader.list_objects() {
+            Ok(list) => list,
+            Err(e) => {
+                error!("An error occurred while trying to get the ZffReader object list: {e}");
+                exit(EXIT_STATUS_ERROR);
+            }
+        };
+        let (phy, log, enc) = object_list.values().fold((0, 0, 0), |(phy, log, enc), val| {
+            match val {
+                ZffReaderObjectType::Physical => (phy + 1, log, enc),
+                ZffReaderObjectType::Logical => (phy, log + 1, enc),
+                ZffReaderObjectType::Encrypted => (phy, log, enc + 1),
+            }
+        });
+        info!("ZffReader created successfully. Found {phy} physical, {log} logical and {enc} encrypted objects.");
+
+        //initialize and decrypt objects
+        for (object_number, obj_type) in &object_list {
+            match zffreader.initialize_object(*object_number) {
+                Ok(_) => info!("Successfully initialized {obj_type} object {object_number}"),
+                Err(e) => error!("Could not inititalize object {object_number} due following error: {e}"),
+            }
+
+            if obj_type == &ZffReaderObjectType::Encrypted {
+                let pw = match decryption_passwords.get(object_number) {
+                    Some(pw) => pw.clone(),
+                    None => match enter_password_dialog(*object_number)  {
+                        Some(pw) => pw,
+                        None => {
+                            info!("No password entered for encrypted object {object_number}.");
+                            String::new()
+                        }
+                    }
+                };
+                match zffreader.decrypt_object(*object_number, pw) {
+                    Ok(o_type) => info!("Object {object_number} ({o_type} object) decrypted successfully"),
+                    Err(e) => warn!("Could not decrypt object {object_number}: {e}"),
+                }
+            }
+        }
+
+        // set object inodes and shift value
+        let numbers_of_decrypted_objects: Vec<u64> = object_list.iter().filter(|(_, v)| v != &&ZffReaderObjectType::Encrypted).map(|(&k, _)| k).collect();
+        let shift_value = match numbers_of_decrypted_objects.iter().max() {
+            Some(value) => *value + 1, // + 1 for root dir inode
+            None => 1,
+        };
+
+        let mut inode_reverse_map = BTreeMap::new();
+        //setup inode reverse map
+        for (object_number, obj_type) in &object_list {
+            if obj_type == &ZffReaderObjectType::Logical {
+                match inode_reverse_map_add_object(&mut zffreader, &mut inode_reverse_map, *object_number, shift_value) {
+                    Ok(noe) => debug!("{noe} entries for object {object_number} added to inode reverse map."),
+                    Err(e) => {
+                        error!("An error occurred while trying to fill the inode reverse map: {e}");
+                        exit(EXIT_STATUS_ERROR);
+                    }
+                }
+            }
+        }
+
+        let cache = ZffFsCache::with_data(object_list, inode_reverse_map);
+
+        Self {
+            zffreader,
+            shift_value,
+            cache,
+        }
+    }
+}
+
+impl<R: Read + Seek> Filesystem for ZffFs<R> {
+        fn readdir(
+        &mut self,
+        _req: &Request,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        mut reply: ReplyDirectory,
+    ) {
+        let mut entries = Vec::new();
+        debug!("READDIR: Start readdir of inode {ino}");
+
+        // sets the . directory which is always = ino
+        entries.push((ino, FileType::Directory, String::from(CURRENT_DIR)));
+        
+        // check if we are in root - directory and list objects
+        if ino == SPECIAL_INODE_ROOT_DIR {
+            // sets the parent directory
+            entries.push((SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(PARENT_DIR)));
+
+            // append appropriate objects
+            for obj_number in self.cache.object_list.iter().filter(|(_, v)| v != &&ZffReaderObjectType::Encrypted).map(|(&k, _)| k) {
+                let object_inode = obj_number + 1; //+ 1 while inode 1 is the root dir
+                let name = format!("{OBJECT_PATH_PREFIX}{obj_number}");
+                entries.push((object_inode, FileType::Directory, name));
+            }
+
+        } else if ino <= self.shift_value { //checks if the inode is a object folder
+            // sets the parent directory
+            entries.push((SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(PARENT_DIR)));
+
+            // set active object reader to appropriate inode
+            if let Err(e) = self.zffreader.set_active_object(ino-1) {
+                error!("An error occured while trying to readdir for inode {ino}: {e}");
+                reply.error(ENOENT);
+                return;
+            }
+            //check object type and use the appropriate fn
+            match self.cache.object_list.get(&(ino-1)) {
+                Some(ZffReaderObjectType::Encrypted) | None => {
+                    error!("Could not find undecrypted object reader for object {}", ino-1);
+                    reply.error(ENOENT);
+                    return;
+                },
+                Some(ZffReaderObjectType::Physical) => match readdir_physical_object_root(&mut self.zffreader, self.shift_value) {
+                    Ok(mut content) => entries.append(&mut content),
+                    Err(e) => {
+                        error!("Error while trying to read content of object directory of object {}: {e}", ino-1);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                },
+                Some(ZffReaderObjectType::Logical) => match readdir_logical_object_root(&mut self.zffreader, self.shift_value) {
+                    Ok(mut content) => entries.append(&mut content),
+                    Err(e) => {
+                        error!("Error while trying to read content of object directory of object {}: {e}", ino-1);
+                        reply.error(ENOENT);
+                        return;
+                    },
+                },
+            }
+        //the following should only affect logical objects.
+        } else {
+            // setup self ino file
+            let (object_no, file_no) = match self.cache.inode_reverse_map.get(&ino) {
+                Some(x) => x,
+                None =>  {
+                    error!("Could not find inode {ino} in inode reverse map.");
+                    reply.error(ENOENT);
+                    return;
+                }
+            };
+            let filemetadata_ref = match prepare_zffreader_logical_file(&mut self.zffreader, *object_no, *file_no) {
+                Ok(fm) => fm,
+                Err(e) =>  {
+                    error!("An error occurred while trying to prepare zffreader: {e}");
+                    reply.error(ENOENT);
+                    return;
+                },
+            };
+
+            //set parent directory entry
+            entries.push((filemetadata_ref.parent_file_number+self.shift_value, FileType::Directory, String::from(PARENT_DIR)));
+            let children = {
+                let mut buffer = Vec::new();
+                if let Err(e) = self.zffreader.read_to_end(&mut buffer) {
+                    error!("Error while trying to read children list of file {file_no} / object {object_no}.");
+                    debug!("{e}");
+                    reply.error(ENOENT);
+                    return;
+                };
+                match Vec::<u64>::decode_directly(&mut buffer.as_slice()) {
+                    Ok(vec) => vec,
+                    Err(e) => {
+                        error!("An error occurred while decoding list of files of file {file_no} / object {object_no}.");
+                        debug!("{e}");
+                        reply.error(ENOENT);
+                        return;
+                    }
+                }
+            };
+
+            //set children entries.
+            let mut children_entries = match readdir_entries_file(&mut self.zffreader, self.shift_value, &children) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    error!("An error occurred while reading directory of file {file_no} / object {object_no}.");
+                    debug!("{e}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            };
+            entries.append(&mut children_entries);
+        };
+
+        for (index, entry) in entries.into_iter().skip(offset as usize).enumerate() {
+            let (inode, file_type, name) = entry;
+            if reply.add(inode, offset + index as i64 + 1, file_type, name) {
+                break;
+            }
+        }
+        reply.ok();
+    }
+}
+
+
+/*
 #[derive(Debug)]
 pub struct ZffOverlayFs {
     pub objects: HashMap<u64, FileAttr>, // <object_number, File attributes>
@@ -908,4 +1145,121 @@ impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
             }
         };
     }
+}*/
+
+fn enter_password_dialog(obj_no: u64) -> Option<String> {
+    match PasswordDialog::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!("Enter the password for object {obj_no}"))
+        .interact() {
+            Ok(pw) => Some(pw),
+            Err(_) => None
+        }
+}
+
+fn readdir_physical_object_root<R: Read + Seek>(zffreader: &mut ZffReader<R>, shift_value: u64) -> Result<Vec<(u64, FileType, String)>> {
+    let chunk_no = match zffreader.active_object_footer()? {
+        ObjectFooter::Physical(footer) => footer.first_chunk_number,
+        _ => return Err(ZffError::new(ZffErrorKind::MismatchObjectType, "logical")),
+    };
+    Ok(vec![(
+        chunk_no+shift_value, 
+        FileType::RegularFile, 
+        ZFF_PHYSICAL_OBJECT_NAME.to_string()
+        )])
+}
+
+fn readdir_logical_object_root<R: Read + Seek>(zffreader: &mut ZffReader<R>, shift_value: u64) -> Result<Vec<(u64, FileType, String)>> {
+    if let ObjectFooter::Logical(footer) = zffreader.active_object_footer()? {
+        readdir_entries_file(zffreader, shift_value, footer.root_dir_filenumbers())
+    } else {
+        Err(ZffError::new(ZffErrorKind::MismatchObjectType, "physical"))
+    }
+}
+
+fn readdir_entries_file<R: Read + Seek>(zffreader: &mut ZffReader<R>, shift_value: u64, children: &Vec<u64>) -> Result<Vec<(u64, FileType, String)>> {
+    let mut entries = Vec::new();
+    for filenumber in children {
+        zffreader.set_active_file(*filenumber)?;
+        let mut filemetadata = zffreader.current_filemetadata()?.clone();
+        let mut zff_filetype = match filemetadata.file_type {
+            Some(ftype) => ftype,
+            None => zffreader.current_fileheader()?.file_type
+        };
+        if zff_filetype == ZffFileType::Hardlink {
+            let mut buffer = Vec::new();
+            zffreader.read_to_end(&mut buffer)?;
+            let original_filenumber = u64::decode_directly(&mut buffer.as_slice())?;
+            zffreader.set_active_file(original_filenumber)?;
+            filemetadata = zffreader.current_filemetadata()?.clone();
+            zff_filetype = match filemetadata.file_type {
+                Some(ftype) => ftype,
+                None => zffreader.current_fileheader()?.file_type
+            };
+        }
+        let inode = filemetadata.first_chunk_number + shift_value;
+        let filetype = convert_filetype(&zff_filetype, zffreader)?;
+        let filename = match filemetadata.filename {
+            Some(ftype) => ftype,
+            None => zffreader.current_fileheader()?.filename
+        };
+        entries.push((inode, filetype, filename.to_string()));
+    }
+
+    Ok(entries)
+}
+
+// hardlinks should be handled before calling this method.
+fn convert_filetype<R: Read + Seek>(in_type: &ZffFileType, zffreader: &mut ZffReader<R>) -> Result<FileType> {
+    let filetype = match in_type {
+        ZffFileType::File => FileType::RegularFile,
+        ZffFileType::Directory => FileType::Directory,
+        ZffFileType::Symlink => FileType::Symlink,
+        ZffFileType::Hardlink => unreachable!(),
+        ZffFileType::SpecialFile => {
+            let mut buffer = Vec::new();
+            zffreader.read_to_end(&mut buffer)?;
+            let filetype_flag = match buffer.last() {
+                Some(byte) => ZffSpecialFileType::try_from(byte)?,
+                None => return Err(ZffError::new(ZffErrorKind::UnknownFileType, format!("{:?}", buffer))),
+            };
+            match filetype_flag {
+                ZffSpecialFileType::Fifo => FileType::NamedPipe,
+                ZffSpecialFileType::Char => FileType::CharDevice,
+                ZffSpecialFileType::Block => FileType::BlockDevice,
+                _ => unimplemented!()
+            }
+        },
+        _ => unimplemented!()
+    };
+    Ok(filetype)
+}
+
+// returns the number of entries which were added.
+fn inode_reverse_map_add_object<R: Read + Seek>(
+    zffreader: &mut ZffReader<R>,
+    inode_reverse_map: &mut BTreeMap<u64, (u64, u64)>,
+    object_number: u64,
+    shift_value: u64) -> Result<u64> {
+    zffreader.set_active_object(object_number)?;
+    let mut counter = 0;
+    let object_footer = match zffreader.active_object_footer()? {
+        ObjectFooter::Logical(log) => log,
+        ObjectFooter::Physical(phy) => return Err(ZffError::new(ZffErrorKind::MismatchObjectType, format!("{:?}", phy))),
+    };
+    for filenumber in object_footer.file_footer_segment_numbers().keys() {
+        zffreader.set_active_file(*filenumber)?;
+        let inode = zffreader.current_filemetadata()?.first_chunk_number + shift_value;
+        inode_reverse_map.insert(inode, (object_number, *filenumber));
+        counter += 1;
+    }
+    Ok(counter)
+}
+
+fn prepare_zffreader_logical_file<R: Read + Seek>(
+    zffreader: &mut ZffReader<R>, 
+    object_no: u64,
+    file_no: u64) -> Result<&FileMetadata> {
+    zffreader.set_active_object(object_no)?;
+    zffreader.set_active_file(file_no)?;
+    zffreader.current_filemetadata()
 }
