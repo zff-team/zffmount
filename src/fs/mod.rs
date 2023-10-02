@@ -2,23 +2,22 @@
 use std::collections::BTreeMap;
 use std::process::exit;
 use std::ffi::OsStr;
-use std::path::PathBuf;
-use std::fs::{File};
+
+
 use std::time::{UNIX_EPOCH};
-use std::io::{Read, Seek, SeekFrom, Cursor};
+use std::io::{Read, Seek, SeekFrom};
 use std::collections::HashMap;
 
 // - internal
 use super::constants::*;
 use zff::{
     Result,
-    header::{ObjectType, FileType as ZffFileType, SpecialFileType as ZffSpecialFileType},
+    header::{FileType as ZffFileType, SpecialFileType as ZffSpecialFileType},
     footer::{ObjectFooter},
     ValueDecoder,
     io::zffreader::{ZffReader, ObjectType as ZffReaderObjectType, FileMetadata},
     ZffError,
     ZffErrorKind,
-    Object,
 };
 
 // - external
@@ -38,16 +37,22 @@ use dialoguer::{theme::ColorfulTheme, Password as PasswordDialog};
 struct ZffFsCache {
     pub object_list: BTreeMap<u64, ZffReaderObjectType>,
     pub inode_reverse_map: BTreeMap<u64, (u64, u64)>, //<Inode, (object number, file number)
+    pub filename_lookup_table: BTreeMap<String, Vec<(u64, u64)>>, //<Filename, Vec<Parent-Inode, Self-Inode>>
+    pub inode_attributes_map: BTreeMap<u64, FileAttr>,
 }
 
 impl ZffFsCache {
     fn with_data(
         object_list: BTreeMap<u64, ZffReaderObjectType>,
-        inode_reverse_map: BTreeMap<u64, (u64, u64)>) -> Self 
+        inode_reverse_map: BTreeMap<u64, (u64, u64)>,
+        filename_lookup_table: BTreeMap<String, Vec<(u64, u64)>>,
+        inode_attributes_map: BTreeMap<u64, FileAttr>) -> Self 
     {
         Self {
             object_list,
-            inode_reverse_map
+            inode_reverse_map,
+            filename_lookup_table,
+            inode_attributes_map,
         }
     }
 }
@@ -119,20 +124,48 @@ impl<R: Read + Seek> ZffFs<R> {
         };
 
         let mut inode_reverse_map = BTreeMap::new();
-        //setup inode reverse map
+        let mut filename_lookup_table = BTreeMap::new();
+        let mut inode_attributes_map = BTreeMap::new();
+
         for (object_number, obj_type) in &object_list {
-            if obj_type == &ZffReaderObjectType::Logical {
+            if obj_type != &ZffReaderObjectType::Encrypted {
+                //setup inode reverse map
                 match inode_reverse_map_add_object(&mut zffreader, &mut inode_reverse_map, *object_number, shift_value) {
                     Ok(noe) => debug!("{noe} entries for object {object_number} added to inode reverse map."),
                     Err(e) => {
-                        error!("An error occurred while trying to fill the inode reverse map: {e}");
+                        error!("An error occurred while trying to fill the inode reverse map.");
+                        debug!("{e}");
                         exit(EXIT_STATUS_ERROR);
                     }
+                };  
+
+                //setup inode attributes map
+                match inode_attributes_map_add_object(&mut zffreader, &mut inode_attributes_map, *object_number, shift_value) {
+                    Ok(noe) => debug!("{noe} entries for object {object_number} added to inode attributes map."),
+                    Err(e) => {
+                        error!("An error occurred while trying to fill the inode attributes map.");
+                        debug!("{e}");
+                        exit(EXIT_STATUS_ERROR);
+                    }
+                };
+
+                // only for logical objects
+                if obj_type == &ZffReaderObjectType::Logical {
+                    //setup lookup table
+                    match filename_lookup_table_add_object(&mut zffreader, &mut filename_lookup_table, *object_number, shift_value) {
+                        Ok(noe) => debug!("{noe} entries for object {object_number} added to lookup table."),
+                        Err(e) => {
+                            error!("An error occurred while trying to fill the lookup table.");
+                            debug!("{e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    };
                 }
             }
         }
 
-        let cache = ZffFsCache::with_data(object_list, inode_reverse_map);
+        debug!("inode_attributes_map: {:?}", inode_attributes_map);
+        let cache = ZffFsCache::with_data(object_list, inode_reverse_map, filename_lookup_table, inode_attributes_map);
 
         Self {
             zffreader,
@@ -143,13 +176,89 @@ impl<R: Read + Seek> ZffFs<R> {
 }
 
 impl<R: Read + Seek> Filesystem for ZffFs<R> {
-        fn readdir(
+    fn read(
         &mut self,
         _req: &Request,
         ino: u64,
         _fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
+        size: u32,
+        _flags: i32,
+        _lock: Option<u64>,
+        reply: ReplyData,
+    ) {
+        if offset < 0 {
+            error!("READ: offset >= 0 -> offset = {offset}");
+            reply.error(ENOENT);
+            return;
+        }
+        if ino < self.shift_value {
+            unreachable!()
+        } else {
+            let (object_no, file_no) = match self.cache.inode_reverse_map.get(&ino) {
+                Some(data) => data,
+                None => {
+                    error!("Error while trying to read data from inode {ino}: Inode not found in inode reverse map.");
+                    reply.error(ENOENT);
+                    return;
+                }
+            };
+
+            //check if this is a physical object.
+            // we've stored inodes to physical objects in inode map by using the file number 0 as placeholder earlier.
+            if *file_no == 0 {
+                if let Err(e) = self.zffreader.set_active_object(*object_no) {
+                    error!("An error occurred while trying to set object {object_no} as active.");
+                    debug!("{e}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            } else {
+                // if the object is a logical object, we have to do some more stuff.
+                // sets the appropriate object and file active and returns the appropriate file-  
+                // metadata (which is not needed at this point).
+                let _ = match prepare_zffreader_logical_file(&mut self.zffreader, *object_no, *file_no) {
+                    Err(e) => {
+                        error!("Error while trying to set file {file_no} of object {object_no} active.");
+                        debug!("{e}");
+                        reply.error(ENOENT);
+                        return;
+                    },
+                    Ok(metadata) => metadata
+                };
+            }
+            
+            match self.zffreader.seek(SeekFrom::Start(offset as u64)) {
+                Ok(_) => (),
+                Err(e) => {
+                    error!("read error for inode {ino}.");
+                    debug!("{e}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+            let mut buffer = vec![0u8; size as usize];
+            debug!("Fill buffer by reading data at offset {offset} with buffer size of {size}.");
+            match self.zffreader.read(&mut buffer) {
+                Ok(_) => (),
+                Err(e) => {
+                    error!("read error for inode {ino}.");
+                    debug!("{e}");
+                    reply.error(ENOENT);
+                    return
+                }
+            }
+            reply.data(&buffer);
+        }            
+    }
+
+    fn readdir(
+    &mut self,
+    _req: &Request,
+    ino: u64,
+    _fh: u64,
+    offset: i64,
+    mut reply: ReplyDirectory,
     ) {
         let mut entries = Vec::new();
         debug!("READDIR: Start readdir of inode {ino}");
@@ -259,168 +368,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
 
         for (index, entry) in entries.into_iter().skip(offset as usize).enumerate() {
             let (inode, file_type, name) = entry;
-            if reply.add(inode, offset + index as i64 + 1, file_type, name) {
-                break;
-            }
-        }
-        reply.ok();
-    }
-}
-
-
-/*
-#[derive(Debug)]
-pub struct ZffOverlayFs {
-    pub objects: HashMap<u64, FileAttr>, // <object_number, File attributes>
-    pub undecryptable_objects: Vec<u64>, // <object number>,
-    pub passwords_per_object: HashMap<u64, String>,//<object number, password>,
-    pub object_types_map: HashMap<u64, ObjectType>, // <object_number, object type>
-    pub inode_attributes_map: HashMap<u64, FileAttr> //<inode, File attributes>
-}
-
-impl ZffOverlayFs {
-    pub fn new(inputfiles: Vec<PathBuf>, decryption_passwords: &Vec<String>) -> Result<ZffOverlayFs> {
-        //TODO: handle encrypted objects
-        let mut files = Vec::new();
-        for path in &inputfiles {
-         let f = File::open(&path)?;
-            files.push(f);
-        };
-
-        let temp_zffreader = ZffReader::new(files, HashMap::new())?;
-
-        //check encryption and try to decrypt
-        let mut passwords_per_object = HashMap::new();
-
-        for object_number in temp_zffreader.undecryptable_objects() {
-            info!("MOUNT: Trying to decrypt object {object_number} ...");
-            let mut decryption_state = false;
-            'inner:  for password in decryption_passwords {
-                let mut temp_pw_map = HashMap::new();
-                temp_pw_map.insert(*object_number, password.to_string());
-
-                let mut files = Vec::new();
-                for path in &inputfiles {
-                    let f = File::open(&path)?;
-                    files.push(f);
-                };
-                let inner_temp_zffreader = match ZffReader::new(files, temp_pw_map) {
-                    Ok(zffreader) => zffreader,
-                    Err(e) => match e.get_kind() {
-                        ZffErrorKind::PKCS5CryptoError => continue,
-                        _ => return Err(e)
-                    },
-                };
-                if !inner_temp_zffreader.undecryptable_objects().contains(object_number) {
-                    passwords_per_object.insert(*object_number, password.to_string());
-                    decryption_state = true;
-                    break 'inner;
-                }
-            }
-            if decryption_state {
-                info!("MOUNT: ... done. Decryption of object {object_number} was successful.");
-            } else {
-                warn!("MOUNT: ... failed. Could not decrypt object {object_number} successfully.");
-            }
-        }
-
-        let mut files = Vec::new();
-        for path in &inputfiles {
-            let f = File::open(&path)?;
-            files.push(f);
-        };
-        let zffreader = ZffReader::new(files, passwords_per_object.clone())?;
-        let object_numbers = zffreader.object_numbers();
-        let mut objects = HashMap::new();
-        let mut object_types_map = HashMap::new();
-        let mut inode_attributes_map = HashMap::new();
-
-        let mut current_inode = 12;
-        for object_number in object_numbers {
-            let acquisition_start = match zffreader.object(object_number) {
-                None => UNIX_EPOCH,
-                Some(obj) => match OffsetDateTime::from_unix_timestamp(obj.acquisition_start() as i64) {
-                    Ok(time) => time.into(),
-                    Err(_) => UNIX_EPOCH,
-                },
-            };
-            let acquisition_end = match zffreader.object(object_number) {
-                None => UNIX_EPOCH,
-                Some(obj) => match OffsetDateTime::from_unix_timestamp(obj.acquisition_end() as i64) {
-                    Ok(time) => time.into(),
-                    Err(_) => UNIX_EPOCH,
-                }
-            };
-            let file_attr = FileAttr {
-                ino: current_inode,
-                size: 0,
-                blocks: 0,
-                atime: acquisition_end,
-                mtime: acquisition_end,
-                ctime: acquisition_end,
-                crtime: acquisition_start,
-                kind: FileType::Directory,
-                perm: 0o755,
-                nlink: 2,
-                uid: Uid::effective().into(),
-                gid: Gid::effective().into(),
-                rdev: 0,
-                flags: 0,
-                blksize: 512,
-            };
-
-            objects.insert(object_number, file_attr);
-            inode_attributes_map.insert(current_inode, file_attr);
-
-            current_inode += 1;
-        };
-        for obj_number in zffreader.physical_object_numbers() {
-            object_types_map.insert(obj_number, ObjectType::Physical);
-        }
-        for obj_number in zffreader.logical_object_numbers() {
-            object_types_map.insert(obj_number, ObjectType::Logical);
-        }
-
-        let overlay_fs = Self {
-            objects,
-            undecryptable_objects: zffreader.undecryptable_objects().to_vec(),
-            passwords_per_object,
-            object_types_map,
-            inode_attributes_map,
-        };
-        Ok(overlay_fs)
-    }
-
-    pub fn remove_passwords(&mut self) {
-        //TODO: check if real zeroize is possible
-        self.passwords_per_object = HashMap::new()
-    }
-}
-
-impl Filesystem for ZffOverlayFs {
-    fn readdir(
-        &mut self,
-        _req: &Request,
-        ino: u64,
-        _fh: u64,
-        offset: i64,
-        mut reply: ReplyDirectory,
-    ) {
-        if ino != SPECIAL_INODE_ROOT_DIR {
-            reply.error(ENOENT);
-            return;
-        }
-
-        let mut entries = vec![
-            (SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(CURRENT_DIR)),
-            (SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(PARENT_DIR)),
-        ];
-        for (object_number, file_attr) in &self.objects {
-            let entry = (file_attr.ino, FileType::Directory, format!("{OBJECT_PREFIX}{object_number}"));
-            entries.push(entry);
-        }
-        for (index, entry) in entries.into_iter().skip(offset as usize).enumerate() {
-            let (inode, file_type, name) = entry;
+            debug!("READDIR entry added: inode: {inode}, index: {}, file_type: {:?}, name: {name}", offset + index as i64 + 1, file_type);
             if reply.add(inode, offset + index as i64 + 1, file_type, name) {
                 break;
             }
@@ -429,14 +377,17 @@ impl Filesystem for ZffOverlayFs {
     }
 
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+        debug!("Starting LOOKUP request: parent inode: \"{parent}\"; name: \"{:?}\".", name);
+        let name = match name.to_str() {
+            Some(name) => name,
+            None => {
+                error!("LOOKUP: Error while trying to convert name: {:?}", name);
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        //handle root directory with the "object_" directories.
         if parent == SPECIAL_INODE_ROOT_DIR {
-            let name = match name.to_str() {
-                Some(name) => name,
-                None => {
-                    reply.error(ENOENT);
-                    return;
-                },
-            };
             let mut split = name.rsplit(OBJECT_PREFIX);
             let object_number = match split.next() {
                 None => {
@@ -446,36 +397,187 @@ impl Filesystem for ZffOverlayFs {
                 },
                 Some(unparsed_object_number) => match unparsed_object_number.parse::<u64>() {
                     Ok(object_number) => object_number,
-                    Err(_) => {
+                    Err(e) => {
                         //This is a workaround: Some Desktop environments trying to lookup for folders like ".Trash" or ".Trash-1000", but these do not exist.
-                        if unparsed_object_number == DEFAULT_TRASHFOLDER_NAME || unparsed_object_number == format!("{DEFAULT_TRASHFOLDER_NAME}-{}", Uid::effective()) {
+                        if  unparsed_object_number == DEFAULT_TRASHFOLDER_NAME || unparsed_object_number == format!("{DEFAULT_TRASHFOLDER_NAME}-{}", Uid::effective()) {
+                            debug!("Cannot access trashfolders.");
                             reply.error(ENOENT);
                             return;
                         }
-
-                        debug!("LOOKUP: error while trying to parse the object: {unparsed_object_number}");
+                        //this is only a debuggable error, as the bash/zsh completition could generate a huge number of those messages.
+                        debug!("LOOKUP: Error while trying to parse the object: \"{unparsed_object_number}\" for original name: {name}; {e}");
                         reply.error(ENOENT);
                         return;
                     },
                 },
             };
-            let file_attr = match self.objects.get(&object_number) {
+
+            // get the appropriate attributes of the object directory - by using object number +1 shift value.
+            let file_attr = match self.cache.inode_attributes_map.get(&(object_number+1)) {
+                Some(file_attr) => file_attr,
                 None => {
-                    debug!("LOOKUP: cannot find the appropriate file attributes for object number {object_number}");
+                    debug!("GETATTR: unknown inode number: {}", object_number+1);
                     reply.error(ENOENT);
                     return;
                 },
-                Some(file_attr) => file_attr,
             };
+            debug!("LOOKUP: returned entry attr: {:?}", &file_attr);
             reply.entry(&TTL, file_attr, DEFAULT_ENTRY_GENERATION);
+
+        } else if parent <= self.shift_value { //checks if the parent is a object folder
+            // set active object reader to appropriate parent
+            if let Err(e) = self.zffreader.set_active_object(parent-1) {
+                error!("LOOKUP: An error occured while trying to lookup for inode {parent}.");
+                debug!("{e}");
+                reply.error(ENOENT);
+                return;
+            }
+            //check object type and use the appropriate fn
+            match self.cache.object_list.get(&(parent-1)) {
+                Some(ZffReaderObjectType::Encrypted) | None => {
+                    error!("LOOKUP: Could not find undecrypted object reader for object {}", parent-1);
+                    reply.error(ENOENT);
+                    return;
+                },
+                Some(ZffReaderObjectType::Physical) => if name == ZFF_PHYSICAL_OBJECT_NAME {
+                    let object_footer = match self.zffreader.active_object_footer() {
+                        Ok(footer) => match footer { ObjectFooter::Physical(phy) => phy, _ => unreachable!() },
+                        Err(e) => {
+                            error!("LOOKUP: cannot find the object footer of object {}", parent-1);
+                            debug!("{e}");
+                            reply.error(ENOENT);
+                            return;
+                        }
+                    };
+                    let ino = object_footer.first_chunk_number + self.shift_value;
+                    // get the appropriate attributes of the object data file.
+                    let file_attr = match self.cache.inode_attributes_map.get(&ino) {
+                        Some(file_attr) => file_attr,
+                        None => {
+                            debug!("GETATTR: unknown inode number: {}", ino);
+                            reply.error(ENOENT);
+                            return;
+                        },
+                    };
+                    debug!("LOOKUP: returned entry attr: {:?}", &file_attr);
+                    reply.entry(&TTL, file_attr, DEFAULT_ENTRY_GENERATION);
+                } else {
+                    error!("Error while trying to lookup for {name} in object {}", parent-1);
+                    reply.error(ENOENT);
+                    return;
+                },
+                Some(ZffReaderObjectType::Logical) => if let Some(lookup_table_entries) = self.cache.filename_lookup_table.get(name) {
+                    for (parent_inode, inode) in lookup_table_entries {
+                        if parent == *parent_inode {
+                            match self.cache.inode_attributes_map.get(inode) {
+                                Some(attr) => {
+                                    debug!("LOOKUP: returned entry attr: {:?}", &attr);
+                                    reply.entry(&TTL, attr, DEFAULT_ENTRY_GENERATION);
+                                    return;
+                                },
+                                None => {
+                                    error!("An error occurred while trying to get file attributes of inode {inode}.");
+                                    reply.error(ENOENT);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    error!("Error while trying to lookup for {name} in object {}", parent-1);
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+        } else if let Some(lookup_table_entries) = self.cache.filename_lookup_table.get(name) {
+            for (parent_inode, inode) in lookup_table_entries {
+                if parent == *parent_inode {
+                    match self.cache.inode_attributes_map.get(inode) {
+                        Some(attr) => {
+                            debug!("LOOKUP: returned entry-attr: {:?}.", attr);
+                            reply.entry(&TTL, attr, DEFAULT_ENTRY_GENERATION);
+                            return;
+                        },
+                        None => {
+                            error!("An error occurred while trying to get file attributes of inode {inode}.");
+                            reply.error(ENOENT);
+                            return;
+                        }
+                    }
+                }
+            }
         } else {
-            debug!("LOOKUP: Parent ID {parent} not matching root inode dir {SPECIAL_INODE_ROOT_DIR}");
+            error!("Error while trying to lookup for {name} in object {}", parent-1);
             reply.error(ENOENT);
+            return;
+        }
+    }
+
+    fn readlink(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyData) {
+        if ino < self.shift_value {
+            error!("Inode {ino} is not a link.");
+           reply.error(ENOENT);
+        } else {
+            let (object_no, file_no) = match self.cache.inode_reverse_map.get(&ino) {
+                Some(data) => data,
+                None => {
+                    error!("Error while trying to read data from inode {ino}: Inode not found in inode reverse map.");
+                    reply.error(ENOENT);
+                    return;
+                }
+            };
+
+            //check if this is a physical object.
+            // we've stored inodes to physical objects in inode map by using the file number 0 as placeholder earlier.
+            if *file_no == 0 {
+               error!("Inode {ino} is not a link.");
+               reply.error(ENOENT);
+            } else {
+                // if the object is a logical object, we have to do some more stuff.
+                // sets the appropriate object and file active and returns the appropriate filemetadata
+                let filemetadata = match prepare_zffreader_logical_file(&mut self.zffreader, *object_no, *file_no) {
+                    Err(e) => {
+                        error!("Error while trying to set file {file_no} of object {object_no} active.");
+                        debug!("{e}");
+                        reply.error(ENOENT);
+                        return;
+                    },
+                    Ok(metadata) => metadata
+                };
+
+                if filemetadata.file_type != ZffFileType::Symlink {
+                    error!("File {file_no} is not a link.");
+                    debug!("{:?}", filemetadata);
+                    reply.error(ENOENT);
+                    return;
+                }
+                
+                match self.zffreader.seek(SeekFrom::Start(0)) {
+                    Ok(_) => (),
+                    Err(e) => {
+                        error!("read error for inode {ino}.");
+                        debug!("{e}");
+                        reply.error(ENOENT);
+                        return;
+                    }
+                }
+                let mut buffer = Vec::new();
+                match self.zffreader.read_to_end(&mut buffer) {
+                    Ok(_) => (),
+                    Err(e) => {
+                        error!("read error for inode {ino}.");
+                        debug!("{e}");
+                        reply.error(ENOENT);
+                        return
+                    }
+                }
+                reply.data(&buffer);
+            }
         }
     }
 
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
-        match self.inode_attributes_map.get(&ino) {
+        match self.cache.inode_attributes_map.get(&ino) {
             Some(file_attr) => reply.attr(&TTL, file_attr),
             None => if ino == SPECIAL_INODE_ROOT_DIR {
                 reply.attr(&TTL, &DEFAULT_ROOT_DIR_ATTR)
@@ -486,666 +588,6 @@ impl Filesystem for ZffOverlayFs {
         }
     }
 }
-
-pub enum ZffObjectFs<R: Read + Seek> {
-    Physical(ZffPhysicalObjectFs<R>),
-    Logical(ZffLogicalObjectFs<R>)
-}
-
-pub struct ZffPhysicalObjectFs<R: Read + Seek> {
-    pub object_number: u64,
-    pub file_attr: FileAttr,
-    pub object_file_attr: FileAttr,
-    pub zffreader: ZffReader<R>
-}
-
-impl<R: Read + Seek> ZffPhysicalObjectFs<R> {
-    pub fn new(segments: Vec<R>, object_number: u64, decryption_password: Option<&String>) -> Result<ZffPhysicalObjectFs<R>> {
-        let mut decryption_map = HashMap::new();
-        if let Some(decryption_password) = decryption_password {
-            decryption_map.insert(object_number, decryption_password.to_string());
-        }
-        let mut zffreader = ZffReader::new(segments, decryption_map)?;
-
-        let object = match zffreader.object(object_number) {
-            Some(obj) => obj.clone(),
-            None => return Err(ZffError::new(ZffErrorKind::MissingObjectNumber, object_number.to_string())),
-        };
-        let object_info = match object {
-            Object::Physical(object_info) => object_info,
-            Object::Logical(_) => return Err(ZffError::new(ZffErrorKind::MismatchObjectType, "")),
-        };
-        let _ = zffreader.set_reader_physical_object(object_number)?;
-        let size = object_info.footer().length_of_data();
-        let acquisition_start = match zffreader.object(object_number) {
-            None => UNIX_EPOCH,
-            Some(obj) => match OffsetDateTime::from_unix_timestamp(obj.acquisition_start() as i64) {
-                Ok(time) => time.into(),
-                Err(_) => UNIX_EPOCH,
-            },
-        };
-        let acquisition_end = match zffreader.object(object_number) {
-            None => UNIX_EPOCH,
-            Some(obj) => match OffsetDateTime::from_unix_timestamp(obj.acquisition_end() as i64) {
-                Ok(time) => time.into(),
-                Err(_) => UNIX_EPOCH,
-            }
-        };
-        
-        let file_attr = FileAttr {
-            ino: ZFF_OBJECT_FS_PHYSICAL_ATTR_INO,
-            size,
-            blocks: size / DEFAULT_BLOCKSIZE as u64 + 1,
-            atime: acquisition_end,
-            mtime: acquisition_end,
-            ctime: acquisition_end,
-            crtime: acquisition_start,
-            kind: FileType::RegularFile,
-            perm: ZFF_OBJECT_FS_PHYSICAL_ATTR_PERM,
-            nlink: ZFF_OBJECT_FS_PHYSICAL_ATTR_NLINKS,
-            blksize: DEFAULT_BLOCKSIZE,
-            uid: Uid::effective().into(),
-            gid: Gid::effective().into(),
-            flags: 0,
-            rdev: 0,
-        };
-
-        let object_file_attr = FileAttr {
-            ino: SPECIAL_INODE_ROOT_DIR,
-            size: 0,
-            blocks: 0,
-            atime: acquisition_end,
-            mtime: acquisition_end,
-            ctime: acquisition_end,
-            crtime: acquisition_start,
-            kind: FileType::Directory,
-            perm: 0o777,
-            nlink: ZFF_OBJECT_FS_PHYSICAL_ATTR_NLINKS,
-            blksize: DEFAULT_BLOCKSIZE,
-            uid: Uid::effective().into(),
-            gid: Gid::effective().into(),
-            flags: 0,
-            rdev: 0,
-        };
-
-        Ok(Self {
-            object_number,
-            file_attr,
-            object_file_attr,
-            zffreader
-        })
-    }
-}
-
-impl<R: Read + Seek> Filesystem for ZffPhysicalObjectFs<R> {
-    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        if parent == SPECIAL_INODE_ROOT_DIR && name.to_str() == Some(ZFF_PHYSICAL_OBJECT_NAME) {     
-            reply.entry(&TTL, &self.file_attr, DEFAULT_ENTRY_GENERATION);
-        } else {
-            //This is a workaround: Some Desktop environments trying to lookup for folders like ".Trash" or ".Trash-1000", but these do not exist.
-            if name.to_str() == Some(DEFAULT_TRASHFOLDER_NAME) || name.to_str() == Some(&format!("{DEFAULT_TRASHFOLDER_NAME}-{}", Uid::effective())) {
-                reply.error(ENOENT);
-                return;
-            }
-            debug!("LOOKUP: unknown parent ID / name combination. Parent ID: {parent}; name: {:?}", name.to_str());
-            reply.error(ENOENT);
-        }
-    }
-
-    fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
-        match ino {
-            SPECIAL_INODE_ROOT_DIR => reply.attr(&TTL, &self.object_file_attr),
-            ZFF_OBJECT_FS_PHYSICAL_ATTR_INO => reply.attr(&TTL, &self.file_attr),
-            _ => {
-                debug!("GETATTR: unknown inode number: {ino}");
-                reply.error(ENOENT)
-            },
-        }
-    }
-
-    fn readdir(
-        &mut self,
-        _req: &Request,
-        ino: u64,
-        _fh: u64,
-        offset: i64,
-        mut reply: ReplyDirectory,
-    ) {
-        if ino != SPECIAL_INODE_ROOT_DIR {
-            reply.error(ENOENT);
-            return;
-        }
-
-        let entries = vec![
-            (SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(CURRENT_DIR)),
-            (SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(PARENT_DIR)),
-            (ZFF_OBJECT_FS_PHYSICAL_ATTR_INO, FileType::RegularFile, String::from(ZFF_PHYSICAL_OBJECT_NAME)),
-        ];
-
-        for (index, entry) in entries.into_iter().skip(offset as usize).enumerate() {
-            let (inode, file_type, name) = entry;
-            if reply.add(inode, offset + index as i64 + 1, file_type, name) {
-                break;
-            }
-        }
-        reply.ok();
-    }
-
-    fn read(
-        &mut self,
-        _req: &Request,
-        ino: u64,
-        _fh: u64,
-        offset: i64,
-        size: u32,
-        _flags: i32,
-        _lock: Option<u64>,
-        reply: ReplyData,
-    ) {
-        if ino == ZFF_OBJECT_FS_PHYSICAL_ATTR_INO {
-            let mut buffer = vec![0u8; size as usize];
-            match self.zffreader.seek(SeekFrom::Start(offset as u64)) {
-                Ok(_) => (),
-                Err(e) => error!("seek error: {e}"),
-            };
-            match self.zffreader.read(&mut buffer) {
-                Ok(_) => (),
-                Err(e) => error!("read error: {e}"),
-            };
-            reply.data(&buffer);
-        } else {
-            error!("inode number mismatch: {ino}");
-            reply.error(ENOENT);
-        }
-    }
-
-}
-
-pub struct ZffLogicalObjectFs<R: Read + Seek> {
-    pub object_number: u64,
-    pub object_file_attr: FileAttr,
-    pub zffreader: ZffReader<R>
-}
-
-impl<R: Read + Seek> ZffLogicalObjectFs<R> {
-    pub fn new(segments: Vec<R>, object_number: u64, decryption_password: Option<&String>) -> Result<ZffLogicalObjectFs<R>> {
-        let mut decryption_map = HashMap::new();
-        if let Some(decryption_password) = decryption_password {
-            decryption_map.insert(object_number, decryption_password.to_string());
-        }
-        let mut zffreader = ZffReader::new(segments, decryption_map)?;
-
-        let object = match zffreader.object(object_number) {
-            Some(obj) => obj.clone(),
-            None => return Err(ZffError::new(ZffErrorKind::MissingObjectNumber, object_number.to_string())),
-        };
-        
-        let object_info = match &object {
-            Object::Physical(_) => return Err(ZffError::new(ZffErrorKind::MismatchObjectType, "")),
-            Object::Logical(object_info) => object_info,
-        };
-
-        let initial_file_number = match object_info.footer().root_dir_filenumbers().iter().next() {
-            Some(filenumber) => filenumber,
-            None => return Err(ZffError::new(ZffErrorKind::MissingFileNumber, "")),
-        };
-
-        match zffreader.set_reader_logical_object_file(object_number, *initial_file_number) {
-            Ok(_) => (),
-            Err(e) => return Err(e)
-        }
-
-        let acquisition_start = match OffsetDateTime::from_unix_timestamp(object.acquisition_start() as i64) {
-            Ok(time) => time.into(),
-            Err(_) => UNIX_EPOCH,
-        };
-
-        let acquisition_end = match OffsetDateTime::from_unix_timestamp(object.acquisition_end() as i64) {
-            Ok(time) => time.into(),
-            Err(_) => UNIX_EPOCH,
-        };
-
-        let object_file_attr = FileAttr {
-            ino: SPECIAL_INODE_ROOT_DIR,
-            size: 0,
-            blocks: 0,
-            atime: acquisition_end,
-            mtime: acquisition_end,
-            ctime: acquisition_end,
-            crtime: acquisition_start,
-            kind: FileType::Directory,
-            perm: 0o777,
-            nlink: ZFF_OBJECT_FS_PHYSICAL_ATTR_NLINKS,
-            blksize: DEFAULT_BLOCKSIZE,
-            uid: Uid::effective().into(),
-            gid: Gid::effective().into(),
-            flags: 0,
-            rdev: 0,
-        };
-
-        Ok(Self {
-            object_number,
-            object_file_attr,
-            zffreader,
-        })
-    }
-
-    fn file_attr(&mut self, filenumber: u64) -> Result<FileAttr> {
-        let mut filenumber = filenumber;
-        self.zffreader.set_reader_logical_object_file(self.object_number, filenumber)?;
-        let fileinformation = self.zffreader.file_information()?;
-        let mut size = fileinformation.length_of_data();
-        let acquisition_start = match OffsetDateTime::from_unix_timestamp(fileinformation.footer().acquisition_start() as i64) {
-            Ok(time) => time.into(),
-            Err(_) => UNIX_EPOCH,
-        };
-
-        let acquisition_end = match OffsetDateTime::from_unix_timestamp(fileinformation.footer().acquisition_end() as i64) {
-            Ok(time) => time.into(),
-            Err(_) => UNIX_EPOCH,
-        };
-
-        if fileinformation.header().file_type() == ZffFileType::Hardlink {
-            self.zffreader.rewind()?;
-            let mut buffer = vec![0u8; size as usize];
-            self.zffreader.read_exact(&mut buffer)?;
-            let mut cursor = Cursor::new(buffer);
-            filenumber = u64::decode_directly(&mut cursor)?;
-            let linked_fileinformation = {
-                self.zffreader.set_reader_logical_object_file(self.object_number, filenumber)?;
-                self.zffreader.file_information()?
-            };
-            size = linked_fileinformation.length_of_data();
-        };
-        let kind = match fileinformation.header().file_type() {
-            ZffFileType::File => FileType::RegularFile,
-            ZffFileType::Directory => FileType::Directory,
-            ZffFileType::Symlink => FileType::Symlink,
-            ZffFileType::Hardlink => FileType::RegularFile,
-            _ => return Err(ZffError::new(ZffErrorKind::UnimplementedFileType, "")),
-        };
-
-        let file_attr = FileAttr {
-            ino: filenumber+1, //TODO: handle hardlinks
-            size,
-            blocks: size / DEFAULT_BLOCKSIZE as u64 + 1,
-            atime: acquisition_end,
-            mtime: acquisition_end,
-            ctime: acquisition_end,
-            crtime: acquisition_start,
-            kind,
-            perm: ZFF_OBJECT_FS_PHYSICAL_ATTR_PERM, //TODO: handle permissions
-            nlink: ZFF_OBJECT_FS_PHYSICAL_ATTR_NLINKS, //TODO: handle hardlinks
-            blksize: DEFAULT_BLOCKSIZE,
-            uid: Uid::effective().into(), //TODO
-            gid: Gid::effective().into(), //TODO
-            flags: 0,
-            rdev: 0,
-        };
-
-        Ok(file_attr)
-    }
-}
-
-impl<R: Read + Seek> Filesystem for ZffLogicalObjectFs<R> {
-    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        let children = if parent == SPECIAL_INODE_ROOT_DIR {
-            match self.zffreader.object(self.object_number) {
-                Some(Object::Logical(obj_info)) => obj_info.footer().root_dir_filenumbers().to_owned(),
-                _ => {
-                    reply.error(ENOENT);
-                    return;
-                },
-            }
-        } else {
-            let fileinformation = match self.zffreader.set_reader_logical_object_file(self.object_number, parent-1) {
-                Ok(_) => match self.zffreader.file_information() {
-                    Ok(fileinformation) => fileinformation,
-                    Err(_) => {
-                        reply.error(ENOENT);
-                        return;
-                    }
-                },
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            };
-            // entries
-            match self.zffreader.rewind() {
-                Ok(_) => (),
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-            let size = fileinformation.length_of_data();
-            let mut buffer = vec![0u8; size as usize];
-            match self.zffreader.read(&mut buffer) {
-                Ok(_) => (),
-                Err(e) => {
-                    error!("LOOKUP: Read error: {e}");
-                    reply.error(ENOENT);
-                    return;
-                },
-            }
-            if buffer.is_empty() {
-                Vec::new()
-            } else {
-                let mut cursor = Cursor::new(&buffer);
-                let children = match Vec::<u64>::decode_directly(&mut cursor) {
-                        Ok(children) => children,
-                        Err(e) => {
-                            error!("LOOKUP: {e}");
-                            reply.error(ENOENT);
-                            return;
-                    },
-                };
-                children
-            }
-        };
-        for filenumber in children {
-            match self.zffreader.set_reader_logical_object_file(self.object_number, filenumber) {
-                Ok(_) => (),
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                },
-            }
-            let fileinformation = match self.zffreader.file_information() {
-                Ok(info) => info,
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                },
-            };
-            if name.to_str() == Some(fileinformation.header().filename()) {
-                let file_attr = match self.file_attr(filenumber) {
-                    Ok(file_attr) => file_attr,
-                    Err(_) => {
-                        reply.error(ENOENT);
-                        return;
-                    }
-                };
-                reply.entry(&TTL, &file_attr, DEFAULT_ENTRY_GENERATION);
-                return;
-            }
-        }
-        reply.error(ENOENT);
-    }
-
-    fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
-        if ino == SPECIAL_INODE_ROOT_DIR {
-            reply.attr(&TTL, &self.object_file_attr);
-        } else {
-            let file_attr = match self.file_attr(ino-1) {
-                Ok(file_attr) => file_attr,
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            };
-            reply.attr(&TTL, &file_attr);
-        }
-    }
-
-    fn readdir(
-        &mut self,
-        _req: &Request,
-        ino: u64,
-        _fh: u64,
-        offset: i64,
-        mut reply: ReplyDirectory,
-    ) {
-        let mut entries = Vec::new();
-        debug!("READDIR: Start readdir of inode {ino}");
-        let children = if ino == SPECIAL_INODE_ROOT_DIR {
-            entries.push((SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(CURRENT_DIR)));
-            entries.push((SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(PARENT_DIR)));
-            let filenumbers = match self.zffreader.object(self.object_number).unwrap() {
-                Object::Logical(obj_info) => obj_info.footer().root_dir_filenumbers().to_owned(),
-                Object::Physical(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            };
-            filenumbers
-
-        } else {
-            entries.push((ino, FileType::Directory, String::from(CURRENT_DIR)));
-            // parent_dir
-            let fileinformation = match self.zffreader.set_reader_logical_object_file(self.object_number, ino-1) {
-                Ok(_) => match self.zffreader.file_information() {
-                    Ok(fileinformation) => fileinformation,
-                    Err(_) => {
-                        reply.error(ENOENT);
-                        return;
-                    }
-                },
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            };
-            entries.push((fileinformation.parent()+1, FileType::Directory, String::from(PARENT_DIR)));
-
-            // entries
-            match self.zffreader.rewind() {
-                Ok(_) => (),
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-            let size = fileinformation.length_of_data();
-            let mut buffer = vec![0u8; size as usize];
-            match self.zffreader.read(&mut buffer) {
-                Ok(_) => (),
-                Err(e) => {
-                    error!("READDIR: Read error: {e}");
-                    reply.error(ENOENT);
-                    return;
-                },
-            }
-            if buffer.is_empty() {
-                Vec::new()
-            } else {
-                let mut cursor = Cursor::new(&buffer);
-                let children = match Vec::<u64>::decode_directly(&mut cursor) {
-                        Ok(children) => children,
-                        Err(e) => {
-                            error!("READDIR: {e}");
-                            reply.error(ENOENT);
-                            return;
-                    },
-                };
-                children
-            }
-        };
-        debug!("READDIR: children in dir: {:?}", children);
-
-        for child_filenumber in children {
-            let fileinformation = match self.zffreader.set_reader_logical_object_file(self.object_number, child_filenumber) {
-                Ok(_) => match self.zffreader.file_information() {
-                    Ok(fileinformation) => fileinformation,
-                    Err(e) => {
-                        let object_number = self.object_number;
-                        error!("READDIR: error while trying to read fileinformation(1) for file {child_filenumber} in object {object_number}. Internal error message: {e}");
-                        reply.error(ENOENT);
-                        return;
-                    }
-                },
-                Err(e) => {
-                    let object_number = self.object_number;
-                    error!("READDIR: error while trying to read fileinformation(2) for file {child_filenumber} in object {object_number}. Internal error message: {e}");
-                    reply.error(ENOENT);
-                    return;
-                }
-            };
-
-            let kind = match fileinformation.header().file_type() {
-                ZffFileType::File => FileType::RegularFile,
-                ZffFileType::Directory => FileType::Directory,
-                ZffFileType::Symlink => FileType::Symlink,
-                ZffFileType::Hardlink => FileType::RegularFile, //TODO: hardlink of a directory?
-                _ => {
-                    reply.error(ENOENT);
-                    return;
-                },
-            };
-            let filename = fileinformation.header().filename();
-            entries.push((child_filenumber+1, kind, String::from(filename)));
-        }
-
-        for (index, entry) in entries.into_iter().skip(offset as usize).enumerate() {
-            let (inode, file_type, name) = entry;
-            if reply.add(inode, offset + index as i64 + 1, file_type, name) {
-                break;
-            }
-        }
-        reply.ok();
-    }
-
-    fn read(
-        &mut self,
-        _req: &Request,
-        ino: u64,
-        _fh: u64,
-        offset: i64,
-        size: u32,
-        _flags: i32,
-        _lock: Option<u64>,
-        reply: ReplyData,
-    ) {
-        if !offset >= 0 {
-            error!("READ: offset >= 0 -> offset = {offset}");
-            reply.error(ENOENT);
-            return;
-        }
-        let filenumber = ino - 1;
-        let fileinformation = match self.zffreader.set_reader_logical_object_file(self.object_number, filenumber) {
-            Ok(_) => match self.zffreader.file_information() {
-                Ok(fileinformation) => fileinformation,
-                Err(e) => {
-                    error!("READ: {e}");
-                    reply.error(ENOENT);
-                    return;
-                }
-            },
-            Err(e) => {
-                error!("READ: {e}");
-                reply.error(ENOENT);
-                return;
-            }
-        };
-        if fileinformation.header().file_type() == ZffFileType::Hardlink {
-            match self.zffreader.rewind() {
-                Ok(_) => (),
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-            let link_size = fileinformation.length_of_data();
-            let mut buffer = vec![0u8; link_size as usize];
-            match self.zffreader.read(&mut buffer) {
-                Ok(_) => (),
-                Err(e) => {
-                    error!("READ: error: {e}");
-                    reply.error(ENOENT);
-                    return;
-                },
-            }
-            let mut cursor = Cursor::new(buffer);
-            match u64::decode_directly(&mut cursor) {
-                Ok(filenumber) => match self.zffreader.set_reader_logical_object_file(self.object_number, filenumber) {
-                    Ok(_) => (),
-                    Err(e) => {
-                        error!("READ: {e}");
-                        reply.error(ENOENT);
-                        return;
-                    }
-                },
-                Err(e) => {
-                    error!("READ: {e}");
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-        };
-        
-        match self.zffreader.seek(SeekFrom::Start(offset as u64)) {
-            Ok(_) => (),
-            Err(e) => {
-                error!("READ: {e}");
-                reply.error(ENOENT);
-                return;
-            }
-        }
-        let mut buffer = vec![0u8; size as usize];
-        match self.zffreader.read(&mut buffer) {
-            Ok(_) => (),
-            Err(e) => {
-                error!("READ: {e}");
-                reply.error(ENOENT);
-                return
-            }
-        }
-        reply.data(&buffer);
-    }
-
-    fn readlink(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyData) {
-        let filenumber = ino - 1;
-        let fileinformation = match self.zffreader.set_reader_logical_object_file(self.object_number, filenumber) {
-            Ok(_) => match self.zffreader.file_information() {
-                Ok(fileinformation) => fileinformation,
-                Err(e) => {
-                    error!("READ: {e}");
-                    reply.error(ENOENT);
-                    return;
-                }
-            },
-            Err(e) => {
-                error!("READ: {e}");
-                reply.error(ENOENT);
-                return;
-            }
-        };
-        match fileinformation.header().file_type() {
-            ZffFileType::Symlink => (),
-            _ => {
-                reply.error(ENOENT);
-                return;
-            },
-        };
-
-        match self.zffreader.rewind() {
-            Ok(_) => (),
-            Err(e) => {
-                error!("READ: {e}");
-                reply.error(ENOENT);
-                return;
-            }
-        }
-        let mut string_buffer = Vec::new();
-        match self.zffreader.read_to_end(&mut string_buffer) {
-            Ok(_) => (),
-            Err(e) => {
-                error!("READ: {e}");
-                reply.error(ENOENT);
-                return;
-            }
-        }
-        let mut cursor = Cursor::new(string_buffer);
-        match String::decode_directly(&mut cursor) {
-            Ok(path) => reply.data(path.as_bytes()),
-            Err(e) => {
-                error!("READ: DECODE LINK PATH: {e}");
-                reply.error(ENOENT);   
-            }
-        };
-    }
-}*/
 
 fn enter_password_dialog(obj_no: u64) -> Option<String> {
     match PasswordDialog::with_theme(&ColorfulTheme::default())
@@ -1181,20 +623,14 @@ fn readdir_entries_file<R: Read + Seek>(zffreader: &mut ZffReader<R>, shift_valu
     for filenumber in children {
         zffreader.set_active_file(*filenumber)?;
         let mut filemetadata = zffreader.current_filemetadata()?.clone();
-        let mut zff_filetype = match filemetadata.file_type {
-            Some(ftype) => ftype,
-            None => zffreader.current_fileheader()?.file_type
-        };
+        let mut zff_filetype = filemetadata.file_type;
         if zff_filetype == ZffFileType::Hardlink {
             let mut buffer = Vec::new();
             zffreader.read_to_end(&mut buffer)?;
             let original_filenumber = u64::decode_directly(&mut buffer.as_slice())?;
             zffreader.set_active_file(original_filenumber)?;
             filemetadata = zffreader.current_filemetadata()?.clone();
-            zff_filetype = match filemetadata.file_type {
-                Some(ftype) => ftype,
-                None => zffreader.current_fileheader()?.file_type
-            };
+            zff_filetype = filemetadata.file_type;
         }
         let inode = filemetadata.first_chunk_number + shift_value;
         let filetype = convert_filetype(&zff_filetype, zffreader)?;
@@ -1242,16 +678,35 @@ fn inode_reverse_map_add_object<R: Read + Seek>(
     shift_value: u64) -> Result<u64> {
     zffreader.set_active_object(object_number)?;
     let mut counter = 0;
-    let object_footer = match zffreader.active_object_footer()? {
-        ObjectFooter::Logical(log) => log,
-        ObjectFooter::Physical(phy) => return Err(ZffError::new(ZffErrorKind::MismatchObjectType, format!("{:?}", phy))),
+    match zffreader.active_object_footer()? {
+        ObjectFooter::Logical(object_footer) => {
+            for filenumber in object_footer.file_footer_segment_numbers().keys() {
+                zffreader.set_active_file(*filenumber)?;
+
+                let filemetadata = zffreader.current_filemetadata()?;
+                let mut inode = filemetadata.first_chunk_number + shift_value;
+                
+                // checks if the file is a hardlink. In that case, the original file hould be added
+                if filemetadata.file_type == ZffFileType::Hardlink {
+                    let mut buffer = Vec::new();
+                    zffreader.read_to_end(&mut buffer)?;
+                    let original_filenumber = u64::decode_directly(&mut buffer.as_slice())?;
+                    zffreader.set_active_file(original_filenumber)?;
+                    let filemetadata = zffreader.current_filemetadata()?.clone();
+                    inode = filemetadata.first_chunk_number + shift_value;
+                }
+
+                inode_reverse_map.insert(inode, (object_number, *filenumber));
+                counter += 1;
+            }
+        },
+        ObjectFooter::Physical(object_footer) => {
+            let inode = object_footer.first_chunk_number + shift_value;
+            inode_reverse_map.insert(inode, (object_number, 0)); //0 is not a valid file number in zff, so we can use this as a placeholder
+            counter += 1;
+        },
     };
-    for filenumber in object_footer.file_footer_segment_numbers().keys() {
-        zffreader.set_active_file(*filenumber)?;
-        let inode = zffreader.current_filemetadata()?.first_chunk_number + shift_value;
-        inode_reverse_map.insert(inode, (object_number, *filenumber));
-        counter += 1;
-    }
+    
     Ok(counter)
 }
 
@@ -1262,4 +717,203 @@ fn prepare_zffreader_logical_file<R: Read + Seek>(
     zffreader.set_active_object(object_no)?;
     zffreader.set_active_file(file_no)?;
     zffreader.current_filemetadata()
+}
+
+fn filename_lookup_table_add_object<R: Read + Seek>(
+    zffreader: &mut ZffReader<R>, 
+    lookup_table: &mut BTreeMap<String, Vec<(u64, u64)>>, //<Filename, Vec<Parent-Inode, Self-Inode>>
+    object_number: u64, 
+    shift_value: u64) -> Result<u64> {
+    zffreader.set_active_object(object_number)?;
+    let mut counter = 0;
+
+
+    let object_footer = match zffreader.active_object_footer()? {
+        ObjectFooter::Logical(log) => log,
+        ObjectFooter::Physical(phy) => return Err(ZffError::new(ZffErrorKind::MismatchObjectType, format!("{:?}", phy))),
+    };
+    for filenumber in object_footer.file_footer_segment_numbers().keys() {
+        zffreader.set_active_file(*filenumber)?;
+        
+        let filemetadata = zffreader.current_filemetadata()?.clone();
+        let mut inode = filemetadata.first_chunk_number + shift_value;
+
+        // checks if the file is a hardlink. In that case, the original file hould be added
+        if filemetadata.file_type == ZffFileType::Hardlink {
+            let mut buffer = Vec::new();
+            zffreader.read_to_end(&mut buffer)?;
+            let original_filenumber = u64::decode_directly(&mut buffer.as_slice())?;
+            zffreader.set_active_file(original_filenumber)?;
+            let filemetadata = zffreader.current_filemetadata()?.clone();
+            inode = filemetadata.first_chunk_number + shift_value;
+        }
+        //reset the to the hardlink to get the filename of the hardlink.
+        zffreader.set_active_file(*filenumber)?;
+
+        let filename = match filemetadata.filename {
+            Some(fname) => fname,
+            None => zffreader.current_fileheader()?.filename
+        };
+        let parent_file_number = filemetadata.parent_file_number;
+        let parent_inode = if parent_file_number>0 {
+            zffreader.set_active_file(parent_file_number)?;
+            zffreader.current_filemetadata()?.first_chunk_number + shift_value
+        } else {
+            object_number + 1 //if the file sits in root directory.
+        };
+
+        match lookup_table.get_mut(&filename) {
+            Some(inner_vec) => inner_vec.push((parent_inode, inode)),
+            None => { let inner_vec = vec![(parent_inode, inode)]; lookup_table.insert(filename, inner_vec); },
+        };
+        counter += 1;
+    }
+
+    Ok(counter)
+}
+
+
+fn file_attr_of_file<R: Read + Seek>(mut filemetadata: FileMetadata, zffreader: &mut ZffReader<R>, shift_value: u64) -> Result<FileAttr> {
+    let mut zff_filetype = filemetadata.file_type;
+    if zff_filetype == ZffFileType::Hardlink {
+        let mut buffer = Vec::new();
+        zffreader.read_to_end(&mut buffer)?;
+        let original_filenumber = u64::decode_directly(&mut buffer.as_slice())?;
+        zffreader.set_active_file(original_filenumber)?;
+        filemetadata = zffreader.current_filemetadata()?.clone();
+        zff_filetype = filemetadata.file_type;
+    }
+    let filetype = convert_filetype(&zff_filetype, zffreader)?;
+
+    let atime = match filemetadata.metadata_ext.get(ATIME) {
+        Some(atime) => atime.parse::<i64>()?,
+        None => match zffreader.current_fileheader()?.metadata_ext.get(ATIME) {
+            Some(atime) => atime.parse::<i64>()?,
+            None => 0
+        }
+    };
+    let atime = match OffsetDateTime::from_unix_timestamp(atime) {
+        Ok(atime) => atime.into(),
+        Err(_) => UNIX_EPOCH,
+    };
+
+    let mtime = match filemetadata.metadata_ext.get(MTIME) {
+        Some(mtime) => mtime.parse::<i64>()?,
+        None => match zffreader.current_fileheader()?.metadata_ext.get(MTIME) {
+            Some(mtime) => mtime.parse::<i64>()?,
+            None => 0
+        }
+    };
+    let mtime = match OffsetDateTime::from_unix_timestamp(mtime) {
+        Ok(mtime) => mtime.into(),
+        Err(_) => UNIX_EPOCH,
+    };
+
+    let ctime = match filemetadata.metadata_ext.get(CTIME) {
+        Some(ctime) => ctime.parse::<i64>()?,
+        None => match zffreader.current_fileheader()?.metadata_ext.get(CTIME) {
+            Some(ctime) => ctime.parse::<i64>()?,
+            None => 0
+        }
+    };
+    let ctime = match OffsetDateTime::from_unix_timestamp(ctime) {
+        Ok(ctime) => ctime.into(),
+        Err(_) => UNIX_EPOCH,
+    };
+
+    let btime = match filemetadata.metadata_ext.get(BTIME) {
+        Some(btime) => btime.parse::<i64>()?,
+        None => match zffreader.current_fileheader()?.metadata_ext.get(BTIME) {
+            Some(btime) => btime.parse::<i64>()?,
+            None => 0
+        }
+    };
+    let btime = match OffsetDateTime::from_unix_timestamp(btime) {
+        Ok(btime) => btime.into(),
+        Err(_) => UNIX_EPOCH,
+    };
+
+    Ok(FileAttr {
+        ino: filemetadata.first_chunk_number + shift_value,
+        size: filemetadata.length_of_data,
+        blocks: filemetadata.length_of_data / DEFAULT_BLOCKSIZE as u64 + 1,
+        atime,
+        mtime,
+        ctime,
+        crtime: btime,
+        kind: filetype,
+        perm: 0o755,
+        nlink: 1,
+        uid: Uid::effective().into(),
+        gid: Gid::effective().into(),
+        rdev: 0,
+        flags: 0,
+        blksize: DEFAULT_BLOCKSIZE,
+    })
+}
+
+fn file_attr_of_object_footer(object_footer: &ObjectFooter) -> FileAttr {
+    let acquisition_start = match OffsetDateTime::from_unix_timestamp(object_footer.acquisition_start() as i64) {
+        Ok(time) => time.into(),
+        Err(_) => UNIX_EPOCH
+    };
+    let acquisition_end = match OffsetDateTime::from_unix_timestamp(object_footer.acquisition_end() as i64) {
+        Ok(time) => time.into(),
+        Err(_) => UNIX_EPOCH
+    };
+    FileAttr {
+        ino: object_footer.object_number() + 1, //+1 to shift
+        size: 0,
+        blocks: 0,
+        atime: acquisition_end,
+        mtime: acquisition_end,
+        ctime: acquisition_end,
+        crtime: acquisition_start,
+        kind: FileType::Directory,
+        perm: 0o755,
+        nlink: 2,
+        uid: Uid::effective().into(),
+        gid: Gid::effective().into(),
+        rdev: 0,
+        flags: 0,
+        blksize: DEFAULT_BLOCKSIZE,
+    }
+}
+
+fn inode_attributes_map_add_object<R: Read + Seek>(
+    zffreader: &mut ZffReader<R>, 
+    inode_attributes_map: &mut BTreeMap<u64, FileAttr>, 
+    object_number: u64, 
+    shift_value: u64) -> Result<u64> {
+    zffreader.set_active_object(object_number)?;
+    let mut counter = 0;
+
+    let object_footer = zffreader.active_object_footer()?;
+    inode_attributes_map.insert(object_number+1, file_attr_of_object_footer(&object_footer));
+    match object_footer {
+        ObjectFooter::Logical(log_footer) => {
+            for filenumber in log_footer.file_footer_segment_numbers().keys() {
+                zffreader.set_active_file(*filenumber)?;
+                let metadata = zffreader.current_filemetadata()?.clone();
+                let inode = metadata.first_chunk_number + shift_value;
+                let file_attr = file_attr_of_file(metadata, zffreader, shift_value)?;
+                inode_attributes_map.insert(inode, file_attr);
+                counter += 1;
+            }
+        },
+        ObjectFooter::Physical(ref phy_footer) => {
+            let inode = phy_footer.first_chunk_number + shift_value;
+            let mut file_attr = file_attr_of_object_footer(&object_footer);
+            file_attr.ino = inode;
+            file_attr.kind = FileType::RegularFile;
+            file_attr.perm = 0o644;
+            file_attr.size = phy_footer.length_of_data;
+            file_attr.blocks = phy_footer.length_of_data / DEFAULT_BLOCKSIZE as u64 + 1;
+            file_attr.nlink = 1;
+            inode_attributes_map.insert(inode, file_attr); //0 is not a valid file number in zff, so we can use this as a placeholder
+            counter += 1;
+        },
+    };
+
+    Ok(counter)
 }

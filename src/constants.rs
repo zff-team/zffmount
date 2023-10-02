@@ -5,7 +5,6 @@ use std::time::{Duration, UNIX_EPOCH};
 use fuser::{FileAttr, FileType};
 
 // - errors
-pub(crate) const ERROR_SETTING_SIGNAL_HANDLER: &str = "an error occurred while trying to set the signal handler for graceful umounting: ";
 pub(crate) const ERROR_MISSING_ENCRYPTION_KEY: &str = "Zff file(s) are encrypted: You should enter the password by using the -p argument.";
 pub(crate) const ERROR_SERIALIZE_METADATA: &str = "Could not serialize the metadata of the zff image.";
 
@@ -34,13 +33,9 @@ pub(crate) const DEFAULT_ROOT_DIR_ATTR: FileAttr = FileAttr {
 };
 
 // Zff Object fs
-pub(crate) const ZFF_OBJECT_FS_NAME: &str = "ZffObjectFs";
-pub(crate) const ZFF_OBJECT_FS_PHYSICAL_ATTR_INO: u64 = 2;
 pub(crate) const ZFF_OBJECT_FS_PHYSICAL_ATTR_PERM: u16 = DEFAULT_READONLY_PERMISSIONS_REGULAR_FILE;
 pub(crate) const ZFF_OBJECT_FS_PHYSICAL_ATTR_NLINKS: u32 = 1;
-
-// Zff version 1 image
-pub(crate) const ZFF_VERSION1_IMAGE_FS_NAME: &str = "ZffFs";
+pub(crate) const ZFF_IMAGE_FS_NAME: &str = "ZffFs";
 
 // other default values
 pub(crate) const SPECIAL_INODE_ROOT_DIR: u64 = 1;
@@ -62,3 +57,8 @@ pub(crate) const PARENT_DIR: &str = "..";
 
 // prefix
 pub(crate) const OBJECT_PATH_PREFIX: &str = "object_";
+
+pub(crate) const ATIME: &str = "atime";
+pub(crate) const MTIME: &str = "mtime";
+pub(crate) const CTIME: &str = "ctime";
+pub(crate) const BTIME: &str = "btime";
