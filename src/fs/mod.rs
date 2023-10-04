@@ -163,8 +163,6 @@ impl<R: Read + Seek> ZffFs<R> {
                 }
             }
         }
-
-        debug!("inode_attributes_map: {:?}", inode_attributes_map);
         let cache = ZffFsCache::with_data(object_list, inode_reverse_map, filename_lookup_table, inode_attributes_map);
 
         Self {
@@ -336,6 +334,13 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
             entries.push((filemetadata_ref.parent_file_number+self.shift_value, FileType::Directory, String::from(PARENT_DIR)));
             let children = {
                 let mut buffer = Vec::new();
+                //seeks the reader to start position to read all content of the directory (again)
+                if let Err(e) = self.zffreader.rewind() {
+                    error!("Error while trying to seek the children-list of file {file_no} / object {object_no}.");
+                    debug!("{e}");
+                    reply.error(ENOENT);
+                    return;
+                }
                 if let Err(e) = self.zffreader.read_to_end(&mut buffer) {
                     error!("Error while trying to read children list of file {file_no} / object {object_no}.");
                     debug!("{e}");
@@ -377,7 +382,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
     }
 
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        debug!("Starting LOOKUP request: parent inode: \"{parent}\"; name: \"{:?}\".", name);
+        debug!("Starting LOOKUP request: parent inode: \"{parent}\"; name: {:?}.", name);
         let name = match name.to_str() {
             Some(name) => name,
             None => {
@@ -626,6 +631,7 @@ fn readdir_entries_file<R: Read + Seek>(zffreader: &mut ZffReader<R>, shift_valu
         let mut zff_filetype = filemetadata.file_type;
         if zff_filetype == ZffFileType::Hardlink {
             let mut buffer = Vec::new();
+            zffreader.rewind()?;
             zffreader.read_to_end(&mut buffer)?;
             let original_filenumber = u64::decode_directly(&mut buffer.as_slice())?;
             zffreader.set_active_file(original_filenumber)?;
@@ -695,7 +701,6 @@ fn inode_reverse_map_add_object<R: Read + Seek>(
                     let filemetadata = zffreader.current_filemetadata()?.clone();
                     inode = filemetadata.first_chunk_number + shift_value;
                 }
-
                 inode_reverse_map.insert(inode, (object_number, *filenumber));
                 counter += 1;
             }
