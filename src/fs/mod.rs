@@ -33,6 +33,14 @@ use libc::ENOENT;
 use time::{OffsetDateTime};
 use dialoguer::{theme::ColorfulTheme, Password as PasswordDialog};
 
+#[derive(Debug)]
+pub enum PreloadChunkmap {
+    None,
+    InMemory,
+    Redb(redb::Database)
+}
+
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct ZffFsCache {
     pub object_list: BTreeMap<u64, ZffReaderObjectType>,
@@ -65,7 +73,7 @@ pub struct ZffFs<R: Read + Seek> {
 }
 
 impl<R: Read + Seek> ZffFs<R> {
-    pub fn new(inputfiles: Vec<R>, decryption_passwords: &HashMap<u64, String>) -> Self {
+    pub fn new(inputfiles: Vec<R>, decryption_passwords: &HashMap<u64, String>, preload_chunkmap: PreloadChunkmap) -> Self {
         info!("Reading segment files to create initial ZffReader.");
         let mut zffreader = match ZffReader::with_reader(inputfiles) {
             Ok(reader) => reader,
@@ -164,6 +172,39 @@ impl<R: Read + Seek> ZffFs<R> {
             }
         }
         let cache = ZffFsCache::with_data(object_list, inode_reverse_map, filename_lookup_table, inode_attributes_map);
+
+        //preload chunkmap
+        match preload_chunkmap {
+            PreloadChunkmap::None => (),
+            PreloadChunkmap::InMemory => {
+                info!("Preload in memory chunkmap ...");
+                if let Err(e) = zffreader.set_preload_chunkmap_mode_in_memory() {
+                    error!("An error occurred while trying to create the in memory preload chunkmap.");
+                    debug!("{e}");
+                    exit(EXIT_STATUS_ERROR);
+                };
+                if let Err(e) = zffreader.preload_chunkmap_full() {
+                    error!("An error occurred while trying to preload chunkmap.");
+                    debug!("{e}");
+                    exit(EXIT_STATUS_ERROR);
+                };
+                info!("In memory chunkmap successfully preloaded...");
+            }
+            PreloadChunkmap::Redb(db) => {
+                info!("Preload redb chunkmap ...");
+                if let Err(e) = zffreader.set_preload_chunkmap_mode_redb(db) {
+                    error!("An error occurred while trying to create the redb preload chunkmap.");
+                    debug!("{e}");
+                    exit(EXIT_STATUS_ERROR);
+                };
+                if let Err(e) = zffreader.preload_chunkmap_full() {
+                    error!("An error occurred while trying to preload chunkmap.");
+                    debug!("{e}");
+                    exit(EXIT_STATUS_ERROR);
+                };
+                info!("Redb chunkmap successfully preloaded ...");
+            }
+        }
 
         Self {
             zffreader,
