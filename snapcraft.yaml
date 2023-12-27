@@ -8,22 +8,36 @@ description: |
   of a partial or entire disk image or physical memory. The focus of zff is on speed, security and modularity in concert 
   with forensic requirements. The modular design promises high maintainability and scalability. Zff is an alternative 
   to the ewf and aff file formats and is not compatible with them.
-base: core22
-confinement: classic
+base: core20
+confinement: strict
 parts:
   zffmount:
     build-packages: [ gcc, fuse, libfuse-dev, pkg-config ]
-    stage-packages: [ libfuse2 ]
+    stage-packages: [ fuse ]
     plugin: rust
-    source: https://github.com/ph0llux/zffmount.git
+    source: .
     override-pull: |
       snapcraftctl pull
       VERSION="$(git describe --tags --abbrev=0)"
       [ -n "$(echo $VERSION)" ] && GRADE=stable
       snapcraftctl set-version "$VERSION"
       snapcraftctl set-grade "$GRADE"
+    override-stage: |
+      snapcraftctl stage
+      chmod u+s bin/fusermount
+plugs:
+  mntctl:
+    interface: mount-control
+    namespace: host
+    mount:
+      - what: /**
+        where: /**
+        type: [ fuse ]
+        options: [ rw, async, ro ]
 apps:
   zffmount:
     command: bin/zffmount
+    plugs: [mntctl, fuse-support]
+
 architectures:
-  - build-on: [amd64,arm64]
+  - build-on: [ amd64 ]
