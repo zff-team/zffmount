@@ -17,7 +17,7 @@ publish = true
 clap = { version = "3.1.10", features = [ "derive" ] }
 fuser = "0.11.0"
 libc = "0.2.102"
-zff = { path="../zff" }
+zff = { path="../zff", features = [ "log" ] }
 nix = "0.23"
 walkdir = "2.3.2"
 time = { version = "0.3.4", features = [ "formatting" ] }
@@ -31,3 +31,10 @@ hex = "0.4.3"
 toml = "0.5.8"
 dialoguer = "0.10.4"
 redb = "1.0.5"
+
+[profile.release]
+lto = true				# enables link time optimization
+panic = 'unwind'		# unwinds the stack if panic
+debug = false			# I won't see any debug options in release mode.
+opt-level = 2  			# optimized for performance.
+codegen-units = 1		# Set to 1 to allow for maximum size reduction optimizations - at the expense of the compile time.

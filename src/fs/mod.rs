@@ -95,6 +95,7 @@ impl<R: Read + Seek> ZffFs<R> {
                 ZffReaderObjectType::Physical => (phy + 1, log, enc),
                 ZffReaderObjectType::Logical => (phy, log + 1, enc),
                 ZffReaderObjectType::Encrypted => (phy, log, enc + 1),
+                ZffReaderObjectType::Virtual => todo!(), //TODO
             }
         });
         info!("ZffReader created successfully. Found {phy} physical, {log} logical and {enc} encrypted objects.");
@@ -350,6 +351,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                         return;
                     },
                 },
+                Some(ZffReaderObjectType::Virtual) => todo!(), //TODO
             }
         //the following should only affect logical objects.
         } else {
@@ -508,7 +510,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                     debug!("LOOKUP: returned entry attr: {:?}", &file_attr);
                     reply.entry(&TTL, file_attr, DEFAULT_ENTRY_GENERATION);
                 } else {
-                    error!("Error while trying to lookup for {name} in object {}", parent-1);
+                    debug!("Error while trying to lookup for {name} in object {}", parent-1);
                     reply.error(ENOENT);
                     return;
                 },
@@ -530,10 +532,11 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                         }
                     }
                 } else {
-                    error!("Error while trying to lookup for {name} in object {}", parent-1);
+                    debug!("Error while trying to lookup for {name} in object {}", parent-1);
                     reply.error(ENOENT);
                     return;
                 }
+                Some(ZffReaderObjectType::Virtual) => todo!(), //TODO
             }
         } else if let Some(lookup_table_entries) = self.cache.filename_lookup_table.get(name) {
             for (parent_inode, inode) in lookup_table_entries {
@@ -553,7 +556,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                 }
             }
         } else {
-            error!("Error while trying to lookup for {name} in object {}", parent-1);
+            debug!("Error while trying to lookup for {name} in object {}", parent-1);
             reply.error(ENOENT);
             return;
         }
@@ -751,6 +754,7 @@ fn inode_reverse_map_add_object<R: Read + Seek>(
             inode_reverse_map.insert(inode, (object_number, 0)); //0 is not a valid file number in zff, so we can use this as a placeholder
             counter += 1;
         },
+        ObjectFooter::Virtual(_) => todo!(), //TODO
     };
     
     Ok(counter)
@@ -777,6 +781,7 @@ fn filename_lookup_table_add_object<R: Read + Seek>(
     let object_footer = match zffreader.active_object_footer()? {
         ObjectFooter::Logical(log) => log,
         ObjectFooter::Physical(phy) => return Err(ZffError::new(ZffErrorKind::MismatchObjectType, format!("{:?}", phy))),
+        ObjectFooter::Virtual(_) => todo!(), //TODO
     };
     for filenumber in object_footer.file_footer_segment_numbers().keys() {
         zffreader.set_active_file(*filenumber)?;
@@ -959,6 +964,7 @@ fn inode_attributes_map_add_object<R: Read + Seek>(
             inode_attributes_map.insert(inode, file_attr); //0 is not a valid file number in zff, so we can use this as a placeholder
             counter += 1;
         },
+        ObjectFooter::Virtual(_) => todo!(), //TODO
     };
 
     Ok(counter)

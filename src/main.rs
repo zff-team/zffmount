@@ -17,10 +17,6 @@ use fs::*;
 use constants::*;
 use addons::*;
 
-use zff::{
-    header::*,
-};
-
 // - external
 use clap::{Parser, ArgEnum};
 use signal_hook::{consts::{SIGINT, SIGHUP, SIGTERM}, iterator::Signals};
@@ -68,12 +64,14 @@ enum PreloadChunkmapValue {
     Redb,
 }
 
-#[derive(ArgEnum, Clone, Debug)]
+#[derive(ArgEnum, Clone, Debug, PartialEq)]
 enum LogLevel {
     Error,
     Warn,
     Info,
+    FullInfo, //TODO: It should be described in the help page, what "FullInfo" and "FullDebug" exactly do.
     Debug,
+    FullDebug,
     Trace
 }
 
@@ -101,13 +99,23 @@ fn main() {
         LogLevel::Error => LevelFilter::Error,
         LogLevel::Warn => LevelFilter::Warn,
         LogLevel::Info => LevelFilter::Info,
+        LogLevel::FullInfo => LevelFilter::Info,
         LogLevel::Debug => LevelFilter::Debug,
+        LogLevel::FullDebug => LevelFilter::Debug,
         LogLevel::Trace => LevelFilter::Trace,
     };
-    env_logger::builder()
+    if args.log_level == LogLevel::FullInfo || args.log_level == LogLevel::FullDebug {
+        env_logger::builder()
         .format_timestamp_nanos()
         .filter_level(log_level)
         .init();
+    } else {
+        env_logger::builder()
+        .format_timestamp_nanos()
+        .filter_module(env!("CARGO_PKG_NAME"), log_level)
+        .init();
+    };
+
 
     let inputfiles = open_files(&args);
     

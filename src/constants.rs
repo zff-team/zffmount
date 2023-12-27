@@ -5,9 +5,6 @@ use std::time::{Duration, UNIX_EPOCH};
 use fuser::{FileAttr, FileType};
 
 // - errors
-pub(crate) const ERROR_MISSING_ENCRYPTION_KEY: &str = "Zff file(s) are encrypted: You should enter the password by using the -p argument.";
-pub(crate) const ERROR_SERIALIZE_METADATA: &str = "Could not serialize the metadata of the zff image.";
-
 pub(crate) const EXIT_STATUS_ERROR: i32 = 1;
 pub(crate) const EXIT_STATUS_SUCCESS: i32 = 0;
 
@@ -31,18 +28,10 @@ pub(crate) const DEFAULT_ROOT_DIR_ATTR: FileAttr = FileAttr {
     flags: 0,
     blksize: 512,
 };
-
-// Zff Object fs
-pub(crate) const ZFF_OBJECT_FS_PHYSICAL_ATTR_PERM: u16 = DEFAULT_READONLY_PERMISSIONS_REGULAR_FILE;
-pub(crate) const ZFF_OBJECT_FS_PHYSICAL_ATTR_NLINKS: u32 = 1;
-pub(crate) const ZFF_IMAGE_FS_NAME: &str = "ZffFs";
-
 // other default values
 pub(crate) const SPECIAL_INODE_ROOT_DIR: u64 = 1;
 pub(crate) const DEFAULT_BLOCKSIZE: u32 = 512;
 pub(crate) const ZFF_PHYSICAL_OBJECT_NAME: &str = "zff_image.dd";
-
-pub(crate) const DEFAULT_READONLY_PERMISSIONS_REGULAR_FILE: u16 = 0o555;
 
 pub(crate) const DEFAULT_TRASHFOLDER_NAME: &str = ".Trash";
 
