@@ -4,7 +4,7 @@ use std::process::exit;
 use std::ffi::OsStr;
 
 
-use std::time::{UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 use std::io::{Read, Seek, SeekFrom};
 use std::collections::HashMap;
 
@@ -13,7 +13,7 @@ use super::constants::*;
 use zff::{
     Result,
     header::{FileType as ZffFileType, SpecialFileType as ZffSpecialFileType},
-    footer::{ObjectFooter},
+    footer::ObjectFooter,
     ValueDecoder,
     io::zffreader::{ZffReader, ObjectType as ZffReaderObjectType, FileMetadata},
     ZffError,
@@ -30,7 +30,7 @@ use fuser::{
 };
 use nix::unistd::{Uid, Gid};
 use libc::ENOENT;
-use time::{OffsetDateTime};
+use time::OffsetDateTime;
 use dialoguer::{theme::ColorfulTheme, Password as PasswordDialog};
 
 #[derive(Debug)]

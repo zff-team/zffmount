@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::process::exit;
 use std::path::PathBuf;
-use std::fs::{File};
+use std::fs::File;
 
 // - modules
 mod fs;
@@ -18,10 +18,10 @@ use constants::*;
 use addons::*;
 
 // - external
-use clap::{Parser, ArgEnum};
+use clap::{Parser, ValueEnum};
 use signal_hook::{consts::{SIGINT, SIGHUP, SIGTERM}, iterator::Signals};
 use log::{LevelFilter, info, error, warn, debug};
-use fuser::{MountOption};
+use fuser::MountOption;
 
 
 
@@ -31,7 +31,7 @@ use fuser::{MountOption};
 #[clap(about, version, author)]
 pub struct Cli {
     /// The input files. This should be your zff image files. You can use this option multiple times.
-    #[clap(short='i', long="inputfiles", global=true, required=false, multiple_values=true)]
+    #[clap(short='i', long="inputfiles", global=true, required=false)]
     inputfiles: Vec<PathBuf>,
 
     /// The output format.
@@ -43,28 +43,28 @@ pub struct Cli {
     decryption_passwords: Vec<(String, String)>,
 
     /// The Loglevel
-    #[clap(short='l', long="log-level", arg_enum, default_value="info")]
+    #[clap(short='l', long="log-level", value_enum, default_value="info")]
     log_level: LogLevel,
 
     /// Preload the chunkmap (in memory or in redb database e.g. at a fast NVMe drive) to speed up the read operations.  
     /// None: saves memory but the read operations are slower (default)   
     /// In memory: needs 24 bytes per chunk (plus a lot of bytes for additional overhead) to store the chunkmap in memory. This is the fastest option, but you need to ensure that you have enough memory.  
     /// redb: use a fast redb database to cache the chunkmap. This could e.g. be useful, if your container is stored at a slow harddrive but the redb database can be cached at a fast nvme drive.  
-    #[clap(short='c', long="preload-chunkmap", arg_enum, default_value="none")]
+    #[clap(short='c', long="preload-chunkmap", value_enum, default_value="none")]
     preload_chunkmap: PreloadChunkmapValue,
 
     #[clap(short='r', long="redb-path", required_if_eq("preload-chunkmap", "redb"))]
     redb_path: Option<PathBuf>,
 }
 
-#[derive(ArgEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug)]
 enum PreloadChunkmapValue {
     None,
     InMemory,
     Redb,
 }
 
-#[derive(ArgEnum, Clone, Debug, PartialEq)]
+#[derive(ValueEnum, Clone, Debug, PartialEq)]
 enum LogLevel {
     Error,
     Warn,
