@@ -53,7 +53,7 @@ pub struct Cli {
     #[clap(short='c', long="preload-chunkmap", value_enum, default_value="none")]
     preload_chunkmap: PreloadChunkmapValue,
 
-    #[clap(short='r', long="redb-path", required_if_eq("preload-chunkmap", "redb"))]
+    #[clap(short='r', long="redb-path", required_if_eq("preload_chunkmap", "redb"))]
     redb_path: Option<PathBuf>,
 }
 
