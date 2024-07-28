@@ -837,9 +837,17 @@ fn file_attr_of_file<R: Read + Seek>(mut filemetadata: FileMetadata, zffreader: 
     let filetype = convert_filetype(&zff_filetype, zffreader)?;
 
     let atime = match filemetadata.metadata_ext.get(ATIME) {
-        Some(atime) => atime.parse::<i64>()?,
+        Some(atime) => if let Some(atime) = atime.as_any().downcast_ref::<u64>() {
+            *atime as i64
+        } else {
+            0
+        },
         None => match zffreader.current_fileheader()?.metadata_ext.get(ATIME) {
-            Some(atime) => atime.parse::<i64>()?,
+            Some(atime) => if let Some(atime) = atime.as_any().downcast_ref::<u64>() {
+                *atime as i64
+            } else {
+                0
+            },
             None => 0
         }
     };
@@ -849,9 +857,17 @@ fn file_attr_of_file<R: Read + Seek>(mut filemetadata: FileMetadata, zffreader: 
     };
 
     let mtime = match filemetadata.metadata_ext.get(MTIME) {
-        Some(mtime) => mtime.parse::<i64>()?,
+        Some(mtime) => if let Some(mtime) = mtime.as_any().downcast_ref::<u64>() {
+            *mtime as i64
+        } else {
+            0
+        },
         None => match zffreader.current_fileheader()?.metadata_ext.get(MTIME) {
-            Some(mtime) => mtime.parse::<i64>()?,
+            Some(mtime) => if let Some(mtime) = mtime.as_any().downcast_ref::<u64>() {
+                *mtime as i64
+            } else {
+                0
+            },
             None => 0
         }
     };
@@ -861,9 +877,17 @@ fn file_attr_of_file<R: Read + Seek>(mut filemetadata: FileMetadata, zffreader: 
     };
 
     let ctime = match filemetadata.metadata_ext.get(CTIME) {
-        Some(ctime) => ctime.parse::<i64>()?,
+        Some(ctime) => if let Some(ctime) = ctime.as_any().downcast_ref::<u64>() {
+            *ctime as i64
+        } else {
+            0
+        },
         None => match zffreader.current_fileheader()?.metadata_ext.get(CTIME) {
-            Some(ctime) => ctime.parse::<i64>()?,
+            Some(ctime) => if let Some(ctime) = ctime.as_any().downcast_ref::<u64>() {
+                *ctime as i64
+            } else {
+                0
+            },
             None => 0
         }
     };
@@ -873,9 +897,17 @@ fn file_attr_of_file<R: Read + Seek>(mut filemetadata: FileMetadata, zffreader: 
     };
 
     let btime = match filemetadata.metadata_ext.get(BTIME) {
-        Some(btime) => btime.parse::<i64>()?,
+        Some(btime) => if let Some(btime) = btime.as_any().downcast_ref::<u64>() {
+            *btime as i64
+        } else {
+            0
+        },
         None => match zffreader.current_fileheader()?.metadata_ext.get(BTIME) {
-            Some(btime) => btime.parse::<i64>()?,
+            Some(btime) => if let Some(btime) = btime.as_any().downcast_ref::<u64>() {
+                *btime as i64
+            } else {
+                0
+            },
             None => 0
         }
     };
