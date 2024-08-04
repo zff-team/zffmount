@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+  LLVM-MINGW-TOOLCHAIN-NAME: llvm-mingw-20240619-ucrt-ubuntu-20.04-x86_64
+  PROJECT_NAME: zffmount
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    strategy:
+      matrix:
+        os: [ubuntu-20.04, windows-latest, macos-latest, ubuntu-latest] # ubuntu latest is only used for building the windows aarch64 binary
+        include:
+          - os: ubuntu-20.04
+            libacl: libacl1-dev
+            aarch64-compiler: gcc-aarch64-linux-gnu
+            toolchain: stable
+            target: x86_64-unknown-linux-gnu
+            aarch64-target: aarch64-unknown-linux-gnu
+            name: Linux (Ubuntu 20.04)
+            fid: x86_64-linux
+            aarch64-fid: aarch64-linux
+          - os: ubuntu-latest
+            libacl: "" # no libacl on ubuntu-latest for windows aarch64
+            toolchain: nightly
+            target: aarch64-pc-windows-gnullvm
+            name: Windows aarch64 (cross-compiled on Ubuntu 24.04)
+            fid: aarch64-windows.exe
+          - os: windows-latest
+            libacl: ""
+            toolchain: nightly
+            target: x86_64-pc-windows-msvc
+            name: Windows x86_64 (MSVC)
+            fid: x86_64-windows.exe
+          - os: macos-latest
+            libacl: ""
+            toolchain: stable
+            target: aarch64-apple-darwin
+            name: macOS (arm64)
+            fid: aarch64-macos
+    
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ matrix.toolchain }}
+        target: ${{ matrix.target }}
+        components: clippy
+        default: true
+    
+    - name: Install acl-deps (Linux only)
+      if: matrix.os == 'ubuntu-20.04'
+      run: sudo apt-get install -y ${{ matrix.libacl }} ${{ matrix.aarch64-compiler }}
+    
+    - name: Install LLVM MinGW toolchain (Windows aarch64)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+          curl -L -o ${{ env.LLVM-MINGW-TOOLCHAIN-NAME }}.tar.xz https://github.com/mstorsjo/llvm-mingw/releases/download/20240619/${{ env.LLVM-MINGW-TOOLCHAIN-NAME }}.tar.xz
+          tar -xf ${{ env.LLVM-MINGW-TOOLCHAIN-NAME }}.tar.xz
+          echo "$GITHUB_WORKSPACE/${{ env.LLVM-MINGW-TOOLCHAIN-NAME }}/bin" >> $GITHUB_PATH
+    
+    - name: Build ${{ matrix.target }}
+      run: cargo build --release --target ${{ matrix.target }}
+
+    - name: Build ${{ matrix.aarch64-target }}
+      if: matrix.os == 'ubuntu-20.04'
+      run: cargo build --release --target ${{ matrix.aarch64-target }}
+    
+    - name: Create release directory
+      run: mkdir -p release
+
+    - name: Move executable (Linux)
+      if: matrix.os == 'ubuntu-20.04'
+      run: mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }} release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
+    
+    - name: Move executable (Linux aarch64)
+      if: matrix.os == 'ubuntu-20.04'
+      run: mv target/${{ matrix.aarch64-target }}/release/${{ env.PROJECT_NAME }} release/${{ env.PROJECT_NAME }}-${{ matrix.aarch64-fid }}
+    
+    - name: Move executable (Windows)
+      if: matrix.os == 'windows-latest'
+      run: mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}.exe release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
+    
+    - name: Move executable (macOS)
+      if: matrix.os == 'macos-latest'
+      run: mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }} release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
+    
+    - name: Move executable (Windows aarch64)
+      if: matrix.os == 'ubuntu-latest'
+      run: mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}.exe release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
+    
+    - name: Upload Release Asset
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.PROJECT_NAME }}-${{ matrix.fid }}
+        path: release
+    
+    - name: Upload Linux aarch64 Release Asset
+      uses: actions/upload-artifact@v2
+      if: matrix.os == 'ubuntu-20.04'
+      with:
+        name: ${{ env.PROJECT_NAME }}-${{ matrix.aarch64-fid }}
+        path: release
+    
+  release:
+    needs: build
+    runs-on: ubuntu-20.04
+    steps:
+    - name: Download binaries
+      uses: actions/download-artifact@v2
+      with:
+        name: ${{ env.PROJECT_NAME }}-x86_64-linux
+        path: ./release
+    - name: Download Linux aarch64 binaries
+      uses: actions/download-artifact@v2
+      with:
+        name: ${{ env.PROJECT_NAME }}-aarch64-linux
+    - name: Download Windows binaries
+      uses: actions/download-artifact@v2
+      with:
+        name: ${{ env.PROJECT_NAME }}-x86_64-windows.exe
+        path: ./release
+    - name: Download macOS binaries
+      uses: actions/download-artifact@v2
+      with:
+        name: ${{ env.PROJECT_NAME }}-aarch64-macos
+        path: ./release
+    - name: Download Windows aarch64 binaries
+      uses: actions/download-artifact@v2
+      with:
+        name: ${{ env.PROJECT_NAME }}-aarch64-windows.exe
+        path: ./release
+    
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          release/${{ env.PROJECT_NAME }}-x86_64-linux
+          release/${{ env.PROJECT_NAME }}-aarch64-linux
+          release/${{ env.PROJECT_NAME }}-x86_64-windows.exe
+          release/${{ env.PROJECT_NAME }}-aarch64-windows.exe
+          release/${{ env.PROJECT_NAME }}-aarch64-macos
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
