@@ -1,19 +1,37 @@
+# base information
 name: zffmount
 adopt-info: zffmount
 summary: Tool to fuse-mount zff files.
 description: |
   zffmount is a tool to mount zff files with FUSE.
+issues: https://github.com/zff-team/zffmount/issues
+source-code: https://github.com/zff-team/zffmount
+website: https://zff.dev
+# snapcraft information
+base: core22
 
-  Zff (Z forensic file format) is a completley new designed file format to store and handle the contents and structure 
-  of a partial or entire disk image or physical memory. The focus of zff is on speed, security and modularity in concert 
-  with forensic requirements. The modular design promises high maintainability and scalability. Zff is an alternative 
-  to the ewf and aff file formats and is not compatible with them.
-base: core20
+grade: stable
 confinement: strict
+compression: lzo
+
+architectures:
+  - build-on: amd64
+  - build-on: arm64
+
+# snapcraft
 parts:
+  # install rust manually
+  rust-deps:
+    plugin: nil
+    build-packages:
+      - curl
+    override-pull: |
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
   zffmount:
-    build-packages: [ gcc, fuse, libfuse-dev, pkg-config ]
-    stage-packages: [ fuse ]
+    after: [ rust-deps ]
+    build-packages: [ gcc, fuse3, libfuse3-dev, pkg-config, libacl1-dev ]
+    stage-packages: [ fuse3 ]
     plugin: rust
     source: .
     override-pull: |
@@ -24,7 +42,8 @@ parts:
       snapcraftctl set-grade "$GRADE"
     override-stage: |
       snapcraftctl stage
-      chmod u+s bin/fusermount
+      chmod u+s bin/fusermount3
+      chmod u+s sbin/mount.fuse3
 plugs:
   mntctl:
     interface: mount-control
@@ -33,11 +52,8 @@ plugs:
       - what: /**
         where: /**
         type: [ fuse ]
-        options: [ rw, async, ro ]
+        options: [ rw, async, ro, nosuid, nodev, relatime ]
 apps:
   zffmount:
     command: bin/zffmount
     plugs: [mntctl, fuse-support]
-
-architectures:
-  - build-on: [ amd64 ]

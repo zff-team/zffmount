@@ -41,14 +41,7 @@ jobs:
     - name: Install acl-deps (Linux only)
       if: matrix.os == 'ubuntu-20.04'
       run: sudo apt-get install -y ${{ matrix.libacl }} ${{ matrix.aarch64-compiler }}
-    
-    - name: Install LLVM MinGW toolchain (Windows aarch64)
-      if: matrix.os == 'ubuntu-latest'
-      run: |
-          curl -L -o ${{ env.LLVM-MINGW-TOOLCHAIN-NAME }}.tar.xz https://github.com/mstorsjo/llvm-mingw/releases/download/20240619/${{ env.LLVM-MINGW-TOOLCHAIN-NAME }}.tar.xz
-          tar -xf ${{ env.LLVM-MINGW-TOOLCHAIN-NAME }}.tar.xz
-          echo "$GITHUB_WORKSPACE/${{ env.LLVM-MINGW-TOOLCHAIN-NAME }}/bin" >> $GITHUB_PATH
-    
+      
     - name: Build ${{ matrix.target }}
       run: cargo build --release --target ${{ matrix.target }}
 
@@ -66,19 +59,7 @@ jobs:
     - name: Move executable (Linux aarch64)
       if: matrix.os == 'ubuntu-20.04'
       run: mv target/${{ matrix.aarch64-target }}/release/${{ env.PROJECT_NAME }} release/${{ env.PROJECT_NAME }}-${{ matrix.aarch64-fid }}
-    
-    - name: Move executable (Windows)
-      if: matrix.os == 'windows-latest'
-      run: mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}.exe release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
-    
-    - name: Move executable (macOS)
-      if: matrix.os == 'macos-latest'
-      run: mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }} release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
-    
-    - name: Move executable (Windows aarch64)
-      if: matrix.os == 'ubuntu-latest'
-      run: mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}.exe release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
-    
+
     - name: Upload Release Asset
       uses: actions/upload-artifact@v2
       with:
@@ -97,15 +78,15 @@ jobs:
     runs-on: ubuntu-20.04
     steps:
     - name: Download binaries
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v4
       with:
         name: ${{ env.PROJECT_NAME }}-x86_64-linux
         path: ./release
     - name: Download Linux aarch64 binaries
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v4
       with:
         name: ${{ env.PROJECT_NAME }}-aarch64-linux
-        
+
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
       with:
