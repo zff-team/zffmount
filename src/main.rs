@@ -19,6 +19,7 @@ use addons::*;
 
 // - external
 use clap::{Parser, ValueEnum};
+use nix::unistd::sleep;
 use signal_hook::{consts::{SIGINT, SIGHUP, SIGTERM}, iterator::Signals};
 use log::{LevelFilter, info, error, warn, debug};
 use fuser::MountOption;
@@ -31,7 +32,7 @@ use fuser::MountOption;
 #[clap(about, version, author)]
 pub struct Cli {
     /// The input files. This should be your zff image files. You can use this option multiple times.
-    #[clap(short='i', long="inputfiles", global=true, required=false)]
+    #[clap(short='i', long="inputfiles", global=true, required=false, value_delimiter = ' ', num_args = 1..)]
     inputfiles: Vec<PathBuf>,
 
     /// The output format.
@@ -46,19 +47,46 @@ pub struct Cli {
     #[clap(short='l', long="log-level", value_enum, default_value="info")]
     log_level: LogLevel,
 
-    /// Preload the chunkmap (in memory or in redb database e.g. at a fast NVMe drive) to speed up the read operations.  
-    /// None: saves memory but the read operations are slower (default)   
-    /// In memory: needs 24 bytes per chunk (plus a lot of bytes for additional overhead) to store the chunkmap in memory. This is the fastest option, but you need to ensure that you have enough memory.  
-    /// redb: use a fast redb database to cache the chunkmap. This could e.g. be useful, if your container is stored at a slow harddrive but the redb database can be cached at a fast nvme drive.  
-    #[clap(short='c', long="preload-chunkmap", value_enum, default_value="none")]
-    preload_chunkmap: PreloadChunkmapValue,
+    /// None: saves memory but the read operations are slower (default)  
+    #[clap(short='M', long="preload-mode", value_enum, default_value="none", 
+    required_if_eq_any=[("preload_chunk_offset_map", "true"), ("preload_chunk_size_map", "true"), 
+    ("preload_chunk_flags_map", "true"), ("preload_all_chunkmaps", "true")])]
+    preload_mode: PreloadMode,
 
-    #[clap(short='r', long="redb-path", required_if_eq("preload_chunkmap", "redb"))]
+    /// Preload the chunk offset map (in memory or in redb database e.g. at a fast NVMe drive) to speed up the read operations.
+    /// In memory: needs 24 bytes per chunk (plus a lot of bytes for additional overhead) to store the chunkmap in memory. This is the fastest option, but you need to ensure that you have enough memory.  
+    /// redb: use a fast redb database to cache the chunk offset map. This could e.g. be useful, if your container is stored at a slow harddrive but the redb database can be cached at a fast nvme drive.  
+    #[clap(short='o', long="preload-chunk-offset-map")]
+    preload_chunk_offset_map: bool,
+
+    /// Preload the chunk size map (in memory or in redb database e.g. at a fast NVMe drive) to speed up the read operations.
+    /// In memory: needs 24 bytes per chunk (plus a lot of bytes for additional overhead) to store the chunkmap in memory. This is the fastest option, but you need to ensure that you have enough memory.  
+    /// redb: use a fast redb database to cache the chunk size map. This could e.g. be useful, if your container is stored at a slow harddrive but the redb database can be cached at a fast nvme drive.  
+    #[clap(short='s', long="preload-chunk-size-map")]
+    preload_chunk_size_map: bool,
+
+    /// Preload the chunk size map (in memory or in redb database e.g. at a fast NVMe drive) to speed up the read operations.
+    /// In memory: needs 24 bytes per chunk (plus a lot of bytes for additional overhead) to store the chunkmap in memory. This is the fastest option, but you need to ensure that you have enough memory.  
+    /// redb: use a fast redb database to cache the chunk size map. This could e.g. be useful, if your container is stored at a slow harddrive but the redb database can be cached at a fast nvme drive.  
+    #[clap(short='f', long="preload-chunk-flags-map")]
+    preload_chunk_flags_map: bool,
+
+    /// Preload the all chunks contains same bytes (e.g. only 0's) (in memory or in redb database e.g. at a fast NVMe drive) to speed up the read operations.
+    /// In memory: needs 24 bytes per chunk (plus a lot of bytes for additional overhead) to store the chunkmap in memory. This is the fastest option, but you need to ensure that you have enough memory.  
+    /// redb: use a fast redb database to cache the chunk size map. This could e.g. be useful, if your container is stored at a slow harddrive but the redb database can be cached at a fast nvme drive.  
+    #[clap(short='S', long="preload-samebytes-map")]
+    preload_chunk_samebytes_map: bool,
+
+    /// preloads all chunkmaps (offset, size, flags) in memory or in redb database. This is the fastest option, but you need to ensure that you have enough memory.
+    #[clap(short='a', long="preload-all-chunkmaps")]
+    preload_all_chunkmaps: bool,
+
+    #[clap(short='r', long="redb-path", required_if_eq("preload_mode", "redb"))]
     redb_path: Option<PathBuf>,
 }
 
 #[derive(ValueEnum, Clone, Debug)]
-enum PreloadChunkmapValue {
+enum PreloadMode {
     None,
     InMemory,
     Redb,
@@ -104,7 +132,7 @@ fn main() {
         LogLevel::FullDebug => LevelFilter::Debug,
         LogLevel::Trace => LevelFilter::Trace,
     };
-    if args.log_level == LogLevel::FullInfo || args.log_level == LogLevel::FullDebug {
+    if args.log_level == LogLevel::FullInfo || args.log_level == LogLevel::FullDebug || args.log_level == LogLevel::Trace {
         env_logger::builder()
         .format_timestamp_nanos()
         .filter_level(log_level)
@@ -162,6 +190,7 @@ fn main() {
     });
 
     loop {
+        sleep(1); // to reduce the CPU usage
         if running.load(Ordering::SeqCst) {
             session.join();
             info!("Filesystem successfully unmounted. Session closed.");
@@ -170,11 +199,29 @@ fn main() {
     }
 }
 
-fn gen_preload_chunkmap(args: &Cli) -> fs::PreloadChunkmap {
-    match args.preload_chunkmap {
-        PreloadChunkmapValue::None => fs::PreloadChunkmap::None,
-        PreloadChunkmapValue::InMemory => fs::PreloadChunkmap::InMemory,
-        PreloadChunkmapValue::Redb => {
+fn gen_preload_chunkmap(args: &Cli) -> fs::PreloadChunkmaps {
+    let mut offsets = args.preload_chunk_offset_map;
+    let mut sizes = args.preload_chunk_size_map;
+    let mut flags = args.preload_chunk_flags_map;
+    let mut samebytes = args.preload_chunk_samebytes_map;
+
+    if args.preload_all_chunkmaps {
+        offsets = true;
+        sizes = true;
+        flags = true;
+        samebytes = true;
+    }
+    let mut preload_chunkmaps = fs::PreloadChunkmaps {
+        offsets,
+        sizes,
+        flags,
+        samebytes,
+        mode: fs::PreloadChunkmapsMode::None,
+    };
+    match args.preload_mode {
+        PreloadMode::None => (),
+        PreloadMode::InMemory => preload_chunkmaps.mode = fs::PreloadChunkmapsMode::InMemory,
+        PreloadMode::Redb => {
             //unwrap should safe here, because it is a required argument defined by clap.
             let db = match redb::Database::create(args.redb_path.clone().unwrap()) {
                 Ok(db) => db,
@@ -184,7 +231,8 @@ fn gen_preload_chunkmap(args: &Cli) -> fs::PreloadChunkmap {
                     exit(EXIT_STATUS_ERROR);
                 }
             };
-            fs::PreloadChunkmap::Redb(db)
+            preload_chunkmaps.mode = fs::PreloadChunkmapsMode::Redb(db)
         }
     }
+    preload_chunkmaps
 }

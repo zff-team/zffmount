@@ -34,10 +34,19 @@ use time::OffsetDateTime;
 use dialoguer::{theme::ColorfulTheme, Password as PasswordDialog};
 
 #[derive(Debug)]
-pub enum PreloadChunkmap {
+pub enum PreloadChunkmapsMode {
     None,
     InMemory,
     Redb(redb::Database)
+}
+
+#[derive(Debug)]
+pub struct PreloadChunkmaps {
+    pub offsets: bool,
+    pub sizes: bool,
+    pub flags: bool,
+    pub samebytes: bool,
+    pub mode: PreloadChunkmapsMode
 }
 
 
@@ -73,7 +82,10 @@ pub struct ZffFs<R: Read + Seek> {
 }
 
 impl<R: Read + Seek> ZffFs<R> {
-    pub fn new(inputfiles: Vec<R>, decryption_passwords: &HashMap<u64, String>, preload_chunkmap: PreloadChunkmap) -> Self {
+    pub fn new(
+        inputfiles: Vec<R>, 
+        decryption_passwords: &HashMap<u64, String>, 
+        preload_chunkmaps: PreloadChunkmaps) -> Self {
         info!("Reading segment files to create initial ZffReader.");
         let mut zffreader = match ZffReader::with_reader(inputfiles) {
             Ok(reader) => reader,
@@ -83,7 +95,7 @@ impl<R: Read + Seek> ZffFs<R> {
             }
         };
 
-        let object_list = match zffreader.list_objects() {
+        let mut object_list = match zffreader.list_objects() {
             Ok(list) => list,
             Err(e) => {
                 error!("An error occurred while trying to get the ZffReader object list: {e}");
@@ -125,8 +137,11 @@ impl<R: Read + Seek> ZffFs<R> {
             }
         }
 
+        // from here, we can work with unencrypted/decrypted objects.
+        object_list = zffreader.list_decrypted_objects();
+
         // set object inodes and shift value
-        let numbers_of_decrypted_objects: Vec<u64> = object_list.iter().filter(|(_, v)| v != &&ZffReaderObjectType::Encrypted).map(|(&k, _)| k).collect();
+        let numbers_of_decrypted_objects: Vec<u64> = object_list.iter().map(|(&k, _)| k).collect();
         let shift_value = match numbers_of_decrypted_objects.iter().max() {
             Some(value) => *value + 1, // + 1 for root dir inode
             None => 1,
@@ -137,75 +152,115 @@ impl<R: Read + Seek> ZffFs<R> {
         let mut inode_attributes_map = BTreeMap::new();
 
         for (object_number, obj_type) in &object_list {
-            if obj_type != &ZffReaderObjectType::Encrypted {
-                //setup inode reverse map
-                match inode_reverse_map_add_object(&mut zffreader, &mut inode_reverse_map, *object_number, shift_value) {
-                    Ok(noe) => debug!("{noe} entries for object {object_number} added to inode reverse map."),
-                    Err(e) => {
-                        error!("An error occurred while trying to fill the inode reverse map.");
-                        debug!("{e}");
-                        exit(EXIT_STATUS_ERROR);
-                    }
-                };  
+            //setup inode reverse map
+            match inode_reverse_map_add_object(&mut zffreader, &mut inode_reverse_map, *object_number, shift_value) {
+                Ok(noe) => debug!("{noe} entries for object {object_number} added to inode reverse map."),
+                Err(e) => {
+                    error!("An error occurred while trying to fill the inode reverse map.");
+                    debug!("{e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };  
 
-                //setup inode attributes map
-                match inode_attributes_map_add_object(&mut zffreader, &mut inode_attributes_map, *object_number, shift_value) {
-                    Ok(noe) => debug!("{noe} entries for object {object_number} added to inode attributes map."),
+            //setup inode attributes map
+            match inode_attributes_map_add_object(&mut zffreader, &mut inode_attributes_map, *object_number, shift_value) {
+                Ok(noe) => debug!("{noe} entries for object {object_number} added to inode attributes map."),
+                Err(e) => {
+                    error!("An error occurred while trying to fill the inode attributes map.");
+                    debug!("{e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };
+
+            // only for logical objects
+            if obj_type == &ZffReaderObjectType::Logical {
+                //setup lookup table
+                match filename_lookup_table_add_object(&mut zffreader, &mut filename_lookup_table, *object_number, shift_value) {
+                    Ok(noe) => debug!("{noe} entries for object {object_number} added to lookup table."),
                     Err(e) => {
-                        error!("An error occurred while trying to fill the inode attributes map.");
+                        error!("An error occurred while trying to fill the lookup table.");
                         debug!("{e}");
                         exit(EXIT_STATUS_ERROR);
                     }
                 };
-
-                // only for logical objects
-                if obj_type == &ZffReaderObjectType::Logical {
-                    //setup lookup table
-                    match filename_lookup_table_add_object(&mut zffreader, &mut filename_lookup_table, *object_number, shift_value) {
-                        Ok(noe) => debug!("{noe} entries for object {object_number} added to lookup table."),
-                        Err(e) => {
-                            error!("An error occurred while trying to fill the lookup table.");
-                            debug!("{e}");
-                            exit(EXIT_STATUS_ERROR);
-                        }
-                    };
-                }
             }
         }
         let cache = ZffFsCache::with_data(object_list, inode_reverse_map, filename_lookup_table, inode_attributes_map);
 
-        //preload chunkmap
-        match preload_chunkmap {
-            PreloadChunkmap::None => (),
-            PreloadChunkmap::InMemory => {
-                info!("Preload in memory chunkmap ...");
-                if let Err(e) = zffreader.set_preload_chunkmap_mode_in_memory() {
+        // setup mode
+        match preload_chunkmaps.mode {
+            PreloadChunkmapsMode::None => (),
+            PreloadChunkmapsMode::InMemory => {
+                info!("Set preload chunkmap mode to in-memory ...");
+                if let Err(e) = zffreader.set_preload_chunkmaps_mode_in_memory() {
                     error!("An error occurred while trying to create the in memory preload chunkmap.");
                     debug!("{e}");
                     exit(EXIT_STATUS_ERROR);
                 };
-                if let Err(e) = zffreader.preload_chunkmap_full() {
+                if let Err(e) = zffreader.preload_chunk_offset_map_full() {
                     error!("An error occurred while trying to preload chunkmap.");
                     debug!("{e}");
                     exit(EXIT_STATUS_ERROR);
                 };
-                info!("In memory chunkmap successfully preloaded...");
             }
-            PreloadChunkmap::Redb(db) => {
-                info!("Preload redb chunkmap ...");
+            PreloadChunkmapsMode::Redb(db) => {
+                info!("Set preload chunkmap mode to redb ...");
                 if let Err(e) = zffreader.set_preload_chunkmap_mode_redb(db) {
                     error!("An error occurred while trying to create the redb preload chunkmap.");
                     debug!("{e}");
                     exit(EXIT_STATUS_ERROR);
                 };
-                if let Err(e) = zffreader.preload_chunkmap_full() {
+                if let Err(e) = zffreader.preload_chunk_offset_map_full() {
                     error!("An error occurred while trying to preload chunkmap.");
                     debug!("{e}");
                     exit(EXIT_STATUS_ERROR);
                 };
-                info!("Redb chunkmap successfully preloaded ...");
             }
         }
+
+        // preload appropriate chunkmaps
+
+        if preload_chunkmaps.offsets {
+            info!("Preload chunkmap offsets ...");
+            if let Err(e) = zffreader.preload_chunk_offset_map_full() {
+                error!("An error occurred while trying to preload chunkmap.");
+                debug!("{e}");
+                exit(EXIT_STATUS_ERROR);
+            };
+            info!("Chunkmap offsets successfully preloaded ...");
+        }
+
+        if preload_chunkmaps.sizes {
+            info!("Preload chunkmap sizes ...");
+            if let Err(e) = zffreader.preload_chunk_size_map_full() {
+                error!("An error occurred while trying to preload chunkmap.");
+                debug!("{e}");
+                exit(EXIT_STATUS_ERROR);
+            };
+            info!("Chunkmap sizes successfully preloaded ...");
+        }
+
+        if preload_chunkmaps.flags {
+            info!("Preload chunkmap flags ...");
+            if let Err(e) = zffreader.preload_chunk_flags_map_full() {
+                error!("An error occurred while trying to preload chunkmap.");
+                debug!("{e}");
+                exit(EXIT_STATUS_ERROR);
+            };
+            info!("Chunkmap flags successfully preloaded ...");
+        }
+
+        if preload_chunkmaps.samebytes {
+            info!("Preload chunkmap samebytes ...");
+            if let Err(e) = zffreader.preload_chunk_samebytes_map_full() {
+                error!("An error occurred while trying to preload chunkmap.");
+                debug!("{e}");
+                exit(EXIT_STATUS_ERROR);
+            };
+            info!("Chunkmap samebytes successfully preloaded ...");
+        }
+
+        info!("ZffFs successfully initialized and can be used now.");
 
         Self {
             zffreader,
@@ -271,7 +326,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
             match self.zffreader.seek(SeekFrom::Start(offset as u64)) {
                 Ok(_) => (),
                 Err(e) => {
-                    error!("read error for inode {ino}.");
+                    error!("read error 0x1 for inode {ino}.");
                     debug!("{e}");
                     reply.error(ENOENT);
                     return;
@@ -282,7 +337,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
             match self.zffreader.read(&mut buffer) {
                 Ok(_) => (),
                 Err(e) => {
-                    error!("read error for inode {ino}.");
+                    error!("read error 0x2 for inode {ino}.");
                     debug!("{e}");
                     reply.error(ENOENT);
                     return
@@ -604,7 +659,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                 match self.zffreader.seek(SeekFrom::Start(0)) {
                     Ok(_) => (),
                     Err(e) => {
-                        error!("read error for inode {ino}.");
+                        error!("read error 0x3 for inode {ino}.");
                         debug!("{e}");
                         reply.error(ENOENT);
                         return;
@@ -614,7 +669,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                 match self.zffreader.read_to_end(&mut buffer) {
                     Ok(_) => (),
                     Err(e) => {
-                        error!("read error for inode {ino}.");
+                        error!("read error 0x4 for inode {ino}.");
                         debug!("{e}");
                         reply.error(ENOENT);
                         return
