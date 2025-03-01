@@ -42,10 +42,9 @@ pub enum PreloadChunkmapsMode {
 
 #[derive(Debug)]
 pub struct PreloadChunkmaps {
-    pub offsets: bool,
-    pub sizes: bool,
-    pub flags: bool,
+    pub headers: bool,
     pub samebytes: bool,
+    pub deduplication: bool,
     pub mode: PreloadChunkmapsMode
 }
 
@@ -197,11 +196,6 @@ impl<R: Read + Seek> ZffFs<R> {
                     debug!("{e}");
                     exit(EXIT_STATUS_ERROR);
                 };
-                if let Err(e) = zffreader.preload_chunk_offset_map_full() {
-                    error!("An error occurred while trying to preload chunkmap.");
-                    debug!("{e}");
-                    exit(EXIT_STATUS_ERROR);
-                };
             }
             PreloadChunkmapsMode::Redb(db) => {
                 info!("Set preload chunkmap mode to redb ...");
@@ -210,44 +204,18 @@ impl<R: Read + Seek> ZffFs<R> {
                     debug!("{e}");
                     exit(EXIT_STATUS_ERROR);
                 };
-                if let Err(e) = zffreader.preload_chunk_offset_map_full() {
-                    error!("An error occurred while trying to preload chunkmap.");
-                    debug!("{e}");
-                    exit(EXIT_STATUS_ERROR);
-                };
             }
         }
 
         // preload appropriate chunkmaps
-
-        if preload_chunkmaps.offsets {
-            info!("Preload chunkmap offsets ...");
-            if let Err(e) = zffreader.preload_chunk_offset_map_full() {
+        if preload_chunkmaps.headers {
+            info!("Preload chunk header map ...");
+            if let Err(e) = zffreader.preload_chunk_header_map_full() {
                 error!("An error occurred while trying to preload chunkmap.");
                 debug!("{e}");
                 exit(EXIT_STATUS_ERROR);
             };
-            info!("Chunkmap offsets successfully preloaded ...");
-        }
-
-        if preload_chunkmaps.sizes {
-            info!("Preload chunkmap sizes ...");
-            if let Err(e) = zffreader.preload_chunk_size_map_full() {
-                error!("An error occurred while trying to preload chunkmap.");
-                debug!("{e}");
-                exit(EXIT_STATUS_ERROR);
-            };
-            info!("Chunkmap sizes successfully preloaded ...");
-        }
-
-        if preload_chunkmaps.flags {
-            info!("Preload chunkmap flags ...");
-            if let Err(e) = zffreader.preload_chunk_flags_map_full() {
-                error!("An error occurred while trying to preload chunkmap.");
-                debug!("{e}");
-                exit(EXIT_STATUS_ERROR);
-            };
-            info!("Chunkmap flags successfully preloaded ...");
+            info!("Chunk header map successfully preloaded ...");
         }
 
         if preload_chunkmaps.samebytes {
@@ -258,6 +226,16 @@ impl<R: Read + Seek> ZffFs<R> {
                 exit(EXIT_STATUS_ERROR);
             };
             info!("Chunkmap samebytes successfully preloaded ...");
+        }
+
+        if preload_chunkmaps.deduplication {
+            info!("Preload chunkmap deduplication ...");
+            if let Err(e) = zffreader.preload_chunk_deduplication_map_full() {
+                error!("An error occurred while trying to preload chunkmap.");
+                debug!("{e}");
+                exit(EXIT_STATUS_ERROR);
+            };
+            info!("Chunkmap deduplication successfully preloaded ...");
         }
 
         info!("ZffFs successfully initialized and can be used now.");
@@ -524,7 +502,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                     return;
                 },
             };
-            debug!("LOOKUP: returned entry attr: {:?}", &file_attr);
+            debug!("LOOKUP: returned entry attr(1): {:?}", &file_attr);
             reply.entry(&TTL, file_attr, DEFAULT_ENTRY_GENERATION);
 
         } else if parent <= self.shift_value { //checks if the parent is a object folder
@@ -562,7 +540,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                             return;
                         },
                     };
-                    debug!("LOOKUP: returned entry attr: {:?}", &file_attr);
+                    debug!("LOOKUP: returned entry attr(2): {:?}", &file_attr);
                     reply.entry(&TTL, file_attr, DEFAULT_ENTRY_GENERATION);
                 } else {
                     debug!("Error while trying to lookup for {name} in object {}", parent-1);
@@ -574,7 +552,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                         if parent == *parent_inode {
                             match self.cache.inode_attributes_map.get(inode) {
                                 Some(attr) => {
-                                    debug!("LOOKUP: returned entry attr: {:?}", &attr);
+                                    debug!("LOOKUP: returned entry attr(3): {:?}", &attr);
                                     reply.entry(&TTL, attr, DEFAULT_ENTRY_GENERATION);
                                     return;
                                 },
@@ -598,7 +576,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                 if parent == *parent_inode {
                     match self.cache.inode_attributes_map.get(inode) {
                         Some(attr) => {
-                            debug!("LOOKUP: returned entry-attr: {:?}.", attr);
+                            debug!("LOOKUP: returned entry-attr(4): {:?}.", attr);
                             reply.entry(&TTL, attr, DEFAULT_ENTRY_GENERATION);
                             return;
                         },
@@ -680,7 +658,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
         }
     }
 
-    fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
+    fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
         match self.cache.inode_attributes_map.get(&ino) {
             Some(file_attr) => reply.attr(&TTL, file_attr),
             None => if ino == SPECIAL_INODE_ROOT_DIR {
@@ -705,7 +683,7 @@ fn enter_password_dialog(obj_no: u64) -> Option<String> {
 fn readdir_physical_object_root<R: Read + Seek>(zffreader: &mut ZffReader<R>, shift_value: u64) -> Result<Vec<(u64, FileType, String)>> {
     let chunk_no = match zffreader.active_object_footer()? {
         ObjectFooter::Physical(footer) => footer.first_chunk_number,
-        _ => return Err(ZffError::new(ZffErrorKind::MismatchObjectType, "logical")),
+        _ => return Err(ZffError::new(ZffErrorKind::Invalid, ERR_INVALID_OBJECT_TYPE)),
     };
     Ok(vec![(
         chunk_no+shift_value, 
@@ -718,7 +696,7 @@ fn readdir_logical_object_root<R: Read + Seek>(zffreader: &mut ZffReader<R>, shi
     if let ObjectFooter::Logical(footer) = zffreader.active_object_footer()? {
         readdir_entries_file(zffreader, shift_value, footer.root_dir_filenumbers())
     } else {
-        Err(ZffError::new(ZffErrorKind::MismatchObjectType, "physical"))
+        Err(ZffError::new(ZffErrorKind::Invalid, ERR_INVALID_OBJECT_TYPE))
     }
 }
 
@@ -761,7 +739,7 @@ fn convert_filetype<R: Read + Seek>(in_type: &ZffFileType, zffreader: &mut ZffRe
             zffreader.read_to_end(&mut buffer)?;
             let filetype_flag = match buffer.last() {
                 Some(byte) => ZffSpecialFileType::try_from(byte)?,
-                None => return Err(ZffError::new(ZffErrorKind::UnknownFileType, format!("{:?}", buffer))),
+                None => return Err(ZffError::new(ZffErrorKind::Unsupported, format!("{:?}", buffer))),
             };
             match filetype_flag {
                 ZffSpecialFileType::Fifo => FileType::NamedPipe,
@@ -835,7 +813,7 @@ fn filename_lookup_table_add_object<R: Read + Seek>(
 
     let object_footer = match zffreader.active_object_footer()? {
         ObjectFooter::Logical(log) => log,
-        ObjectFooter::Physical(phy) => return Err(ZffError::new(ZffErrorKind::MismatchObjectType, format!("{:?}", phy))),
+        ObjectFooter::Physical(phy) => return Err(ZffError::new(ZffErrorKind::Invalid, format!("{:?}", phy))),
         ObjectFooter::Virtual(_) => todo!(), //TODO
     };
     for filenumber in object_footer.file_footer_segment_numbers().keys() {

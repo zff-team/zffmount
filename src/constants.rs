@@ -51,3 +51,6 @@ pub(crate) const ATIME: &str = "atime";
 pub(crate) const MTIME: &str = "mtime";
 pub(crate) const CTIME: &str = "ctime";
 pub(crate) const BTIME: &str = "btime";
+
+// - Error messages
+pub(crate) const ERR_INVALID_OBJECT_TYPE: &str = "Invalid object type";
