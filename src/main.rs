@@ -145,7 +145,11 @@ fn main() {
     }
 
     let fs = ZffFs::new(inputfiles, &decryption_passwords, preload_chunkmap);
-    let mountoptions = vec![MountOption::RO, MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME))];
+    let mountoptions = vec![
+        MountOption::RO, 
+        MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME)),
+        MountOption::DefaultPermissions,
+        ];
     let session = match fuser::spawn_mount2(fs, &args.mount_point, &mountoptions) {
         Ok(session) => session,
         Err(e) => {

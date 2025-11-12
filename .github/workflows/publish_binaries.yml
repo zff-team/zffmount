@@ -6,7 +6,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  LLVM-MINGW-TOOLCHAIN-NAME: llvm-mingw-20240619-ucrt-ubuntu-20.04-x86_64
   PROJECT_NAME: zffmount
 
 jobs:
@@ -15,15 +14,15 @@ jobs:
     name: ${{ matrix.name }}
     strategy:
       matrix:
-        os: [ubuntu-20.04]
+        os: [ubuntu-22.04]
         include:
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             libacl: libacl1-dev
             aarch64-compiler: gcc-aarch64-linux-gnu
             toolchain: stable
             target: x86_64-unknown-linux-gnu
             aarch64-target: aarch64-unknown-linux-gnu
-            name: Linux (Ubuntu 20.04)
+            name: Linux (Ubuntu 22.04)
             fid: x86_64-linux
             aarch64-fid: aarch64-linux
     
@@ -38,26 +37,26 @@ jobs:
         components: clippy
         default: true
     
-    - name: Install acl-deps (Linux only)
-      if: matrix.os == 'ubuntu-20.04'
+    - name: Install deps (Linux only)
+      if: matrix.os == 'ubuntu-22.04'
       run: sudo apt-get install -y ${{ matrix.libacl }} ${{ matrix.aarch64-compiler }}
       
     - name: Build ${{ matrix.target }}
       run: cargo build --release --target ${{ matrix.target }}
 
     - name: Build ${{ matrix.aarch64-target }}
-      if: matrix.os == 'ubuntu-20.04'
+      if: matrix.os == 'ubuntu-22.04'
       run: cargo build --release --target ${{ matrix.aarch64-target }}
     
     - name: Create release directory
       run: mkdir -p release
 
     - name: Move executable (Linux)
-      if: matrix.os == 'ubuntu-20.04'
+      if: matrix.os == 'ubuntu-22.04'
       run: mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }} release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
     
     - name: Move executable (Linux aarch64)
-      if: matrix.os == 'ubuntu-20.04'
+      if: matrix.os == 'ubuntu-22.04'
       run: mv target/${{ matrix.aarch64-target }}/release/${{ env.PROJECT_NAME }} release/${{ env.PROJECT_NAME }}-${{ matrix.aarch64-fid }}
 
     - name: Upload Release Asset
@@ -68,14 +67,14 @@ jobs:
     
     - name: Upload Linux aarch64 Release Asset
       uses: actions/upload-artifact@v2
-      if: matrix.os == 'ubuntu-20.04'
+      if: matrix.os == 'ubuntu-22.04'
       with:
         name: ${{ env.PROJECT_NAME }}-${{ matrix.aarch64-fid }}
         path: release
     
   release:
     needs: build
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
     - name: Download binaries
       uses: actions/download-artifact@v4
