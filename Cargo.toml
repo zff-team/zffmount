@@ -1,6 +1,6 @@
 [package]
 name = "zffmount"
-version = "2.0.0-beta.1"
+version = "2.0.0-rc.1"
 edition = "2021"
 rust-version = "1.67.1"
 license = "MIT OR Apache-2.0"
@@ -17,7 +17,7 @@ publish = true
 clap = { version = "4.5.51", features = [ "derive" ] }
 fuser = { version = "0.16", default-features = false }
 libc = "0.2.177"
-zff = { version = "3.0.0-rc.4", features = [ "log" ] }
+zff = { version = "3.0.0-rc.5", features = [ "log" ] }
 nix = { version = "0.30.1", features = [ "user" ] }
 walkdir = "2.3.2"
 time = { version = "0.3.4", features = [ "formatting" ] }
