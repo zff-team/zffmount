@@ -14,10 +14,10 @@ publish = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "4", features = [ "derive" ] }
+clap = { version = "4.5.51", features = [ "derive" ] }
 fuser = { version = "0.16", default-features = false }
-libc = "0.2"
-zff = { path = "../zff", features = [ "log" ] }
+libc = "0.2.177"
+zff = { version = "3.0.0-rc.4", features = [ "log" ] }
 nix = { version = "0.30.1", features = [ "user" ] }
 walkdir = "2.3.2"
 time = { version = "0.3.4", features = [ "formatting" ] }
@@ -26,11 +26,11 @@ signal-hook = "0.3.13"
 log = "0.4"
 env_logger = "0.11"
 #serialize
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
 hex = "0.4.3"
-toml = "0.9.7"
+toml = "0.9.8"
 dialoguer = "0.12"
-redb = "3.0.2"
+redb = "3.1.0"
 
 [profile.release]
 lto = true				# enables link time optimization
