@@ -26,7 +26,11 @@ use log::{error, debug, info, warn};
 // - external
 use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry,
-    Request, KernelConfig, consts::FUSE_PASSTHROUGH,
+    Request,
+};
+#[cfg(target_os = "linux")]
+use fuser::{
+    KernelConfig, consts::FUSE_PASSTHROUGH,
 };
 use nix::unistd::{Uid, Gid};
 use libc::ENOENT;
