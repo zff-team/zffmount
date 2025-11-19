@@ -25,6 +25,13 @@ jobs:
             name: Linux (Ubuntu 22.04)
             fid: x86_64-linux
             aarch64-fid: aarch64-linux
+          - os: macos-latest
+            macfuse: "macfuse"
+            pkgconf: "pkgconf"
+            toolchain: stable
+            target: aarch64-apple-darwin
+            name: macOS (arm64)
+            fid: aarch64-macos
     
     steps:
     - uses: actions/checkout@v2
@@ -37,9 +44,13 @@ jobs:
         components: clippy
         default: true
     
-    - name: Install deps (Linux only)
+    - name: Install deps (Linux)
       if: matrix.os == 'ubuntu-22.04'
       run: sudo apt-get install -y ${{ matrix.libacl }} ${{ matrix.aarch64-compiler }}
+
+    - name: Install deps (MacOS)
+      if: matrix.os == 'macos-latest'
+      run: brew update && brew install ${{ matrix.macfuse }} ${{ matrix.pkgconf }}
       
     - name: Build ${{ matrix.target }}
       run: cargo build --release --target ${{ matrix.target }}
@@ -58,6 +69,10 @@ jobs:
     - name: Move executable (Linux aarch64)
       if: matrix.os == 'ubuntu-22.04'
       run: mv target/${{ matrix.aarch64-target }}/release/${{ env.PROJECT_NAME }} release/${{ env.PROJECT_NAME }}-${{ matrix.aarch64-fid }}
+    
+    - name: Move executable (macOS)
+      if: matrix.os == 'macos-latest'
+      run: mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }} release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
 
     - name: Upload Release Asset
       uses: actions/upload-artifact@v2
@@ -85,6 +100,11 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: ${{ env.PROJECT_NAME }}-aarch64-linux
+    - name: Download macOS binaries
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ env.PROJECT_NAME }}-aarch64-macos
+        path: ./release
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
@@ -92,5 +112,6 @@ jobs:
         files: |
           release/${{ env.PROJECT_NAME }}-x86_64-linux
           release/${{ env.PROJECT_NAME }}-aarch64-linux
+          release/${{ env.PROJECT_NAME }}-aarch64-macos
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
