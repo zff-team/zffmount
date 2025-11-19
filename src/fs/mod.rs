@@ -1,7 +1,7 @@
 // - STD
 use std::collections::BTreeMap;
 use std::process::exit;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, c_int};
 
 
 use std::time::UNIX_EPOCH;
@@ -26,7 +26,7 @@ use log::{error, debug, info, warn};
 // - external
 use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry,
-    Request,
+    Request, KernelConfig, consts::FUSE_PASSTHROUGH,
 };
 use nix::unistd::{Uid, Gid};
 use libc::ENOENT;
@@ -249,6 +249,17 @@ impl<R: Read + Seek> ZffFs<R> {
 }
 
 impl<R: Read + Seek> Filesystem for ZffFs<R> {
+    #[cfg(target_os = "linux")]
+    fn init(
+        &mut self,
+        _req: &Request,
+        config: &mut KernelConfig,
+    ) -> std::result::Result<(), c_int> {
+        config.add_capabilities(FUSE_PASSTHROUGH).unwrap();
+        config.set_max_stack_depth(2).unwrap();
+        Ok(())
+    }
+
     fn read(
         &mut self,
         _req: &Request,

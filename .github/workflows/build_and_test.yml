@@ -19,6 +19,11 @@ jobs:
             toolchain: stable
             target: x86_64-unknown-linux-gnu
             name: Linux (Ubuntu 22.04)
+          - os: macos-latest
+            libacl: ""
+            toolchain: stable
+            target: aarch64-apple-darwin
+            name: macOS (arm64)
     
     steps:
     - uses: actions/checkout@v2
