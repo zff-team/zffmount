@@ -1,8 +1,9 @@
 // - STD
 use std::collections::BTreeMap;
 use std::process::exit;
-use std::ffi::{OsStr, c_int};
-
+use std::ffi::OsStr;
+#[cfg(target_os = "linux")]
+use std::ffi::c_int;
 
 use std::time::UNIX_EPOCH;
 use std::io::{Read, Seek, SeekFrom};
