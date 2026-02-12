@@ -2,27 +2,42 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
+use std::thread::{self, sleep};
 use std::process::exit;
 use std::path::PathBuf;
 use std::fs::File;
+use std::collections::BTreeMap;
+use std::io::{Read, Seek, SeekFrom};
+use std::time::{Duration, UNIX_EPOCH};
 
 // - modules
-mod fs;
 mod constants;
 mod addons;
+mod zff_core;
+#[cfg(target_family = "unix")]
+mod unix;
 
 // - internal
-use fs::*;
 use constants::*;
 use addons::*;
+use zff_core::*;
+#[cfg(target_family = "unix")]
+use unix::*;
 
 // - external
 use clap::{Parser, ValueEnum};
-use nix::unistd::sleep;
-use signal_hook::{consts::{SIGINT, SIGHUP, SIGTERM}, iterator::Signals};
 use log::{LevelFilter, info, error, warn, debug};
-use fuser::MountOption;
+use zff::{
+    Result,
+    header::{FileType as ZffFileType, SpecialFileType as ZffSpecialFileType},
+    footer::ObjectFooter,
+    ValueDecoder,
+    io::zffreader::{ZffReader, ObjectType as ZffReaderObjectType, FileMetadata},
+    ZffError,
+    ZffErrorKind,
+};
+use time::OffsetDateTime;
+use dialoguer::{theme::ColorfulTheme, Password as PasswordDialog};
 
 
 
@@ -133,7 +148,7 @@ fn main() {
     let preload_chunkmap = gen_preload_chunkmap(&args);
 
     let mut decryption_passwords = HashMap::new();
-    for (obj_no, pw) in args.decryption_passwords {
+    for (obj_no, pw) in &args.decryption_passwords {
         let obj_no = match obj_no.parse::<u64>() {
             Ok(no) => no,
             Err(e) => {
@@ -141,83 +156,17 @@ fn main() {
                 exit(EXIT_STATUS_ERROR);
             }
         };
-        decryption_passwords.insert(obj_no, pw);
+        decryption_passwords.insert(obj_no, pw.clone());
     }
 
     let fs = ZffFs::new(inputfiles, &decryption_passwords, preload_chunkmap);
-    let mountoptions = vec![
-        MountOption::RO, 
-        MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME)),
-        MountOption::DefaultPermissions,
-        ];
-    let session = match fuser::spawn_mount2(fs, &args.mount_point, &mountoptions) {
-        Ok(session) => session,
-        Err(e) => {
-            error!("An error occurred while trying to mount the filesystem.");
-            debug!("{e}");
-            exit(EXIT_STATUS_ERROR);
-        }
-    };
 
-    // setup signal handler to unmount by using CTRL+C (or sending SIGHUB/SIGTERM/SIGINT to process).
-    let mut signals = match Signals::new([SIGINT, SIGHUP, SIGTERM]) {
-        Ok(signals) => signals,
-        Err(e) => {
-            error!("an error occurred while trying to set the signal handler for graceful umounting: {e}");
-            exit(EXIT_STATUS_ERROR);
-        },
-    };
-    let running = Arc::new(AtomicBool::new(false));
-    let r = Arc::clone(&running);
-    thread::spawn(move || {
-        for sig in signals.forever() {
-            warn!("UNMOUNT: Received shutdown signal {:?}. The filesystems will be unmounted, as soon as the resource is no longer busy.", sig);
-            r.store(true, Ordering::SeqCst);
-        }
-    });
-
-    loop {
-        sleep(1); // to reduce the CPU usage
-        if running.load(Ordering::SeqCst) {
-            session.join();
-            info!("Filesystem successfully unmounted. Session closed.");
-            exit(EXIT_STATUS_SUCCESS);
-        }
-    }
+    fuse(fs, &args)
 }
 
-fn gen_preload_chunkmap(args: &Cli) -> fs::PreloadChunkmaps {
-    let mut headers = args.preload_chunk_header_map;
-    let mut samebytes = args.preload_chunk_samebytes_map;
-    let mut deduplication = args.preload_chunk_deduplication_map;
-
-    if args.preload_all_chunkmaps {
-        headers = true;
-        samebytes = true;
-        deduplication = true;
-    }
-
-    let mut preload_chunkmaps = fs::PreloadChunkmaps {
-        headers,
-        samebytes,
-        deduplication,
-        mode: fs::PreloadChunkmapsMode::None,
-    };
-    match args.preload_mode {
-        PreloadMode::None => (),
-        PreloadMode::InMemory => preload_chunkmaps.mode = fs::PreloadChunkmapsMode::InMemory,
-        PreloadMode::Redb => {
-            //unwrap should safe here, because it is a required argument defined by clap.
-            let db = match redb::Database::create(args.redb_path.clone().unwrap()) {
-                Ok(db) => db,
-                Err(e) => {
-                    error!("An error occurred while trying to create preload chunmap database.");
-                    debug!("{e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
-            };
-            preload_chunkmaps.mode = fs::PreloadChunkmapsMode::Redb(db)
-        }
-    }
-    preload_chunkmaps
+fn fuse<R: Read + Seek + Send + Sync + 'static>(fs: ZffFs<R>, args: &Cli) {
+    #[cfg(target_family = "unix")]
+    fuse_unix(fs, args);
+    #[cfg(target_family = "windows")]
+    unimplemented!();
 }
