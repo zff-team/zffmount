@@ -41,10 +41,12 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                 }
             };
 
+            let mut zffreader = self.zffreader.lock().unwrap();
+
             //check if this is a physical object.
             // we've stored inodes to physical objects in inode map by using the file number 0 as placeholder earlier.
             if *file_no == 0 {
-                if let Err(e) = self.zffreader.set_active_object(*object_no) {
+                if let Err(e) = zffreader.set_active_object(*object_no) {
                     error!("An error occurred while trying to set object {object_no} as active.");
                     debug!("{e}");
                     reply.error(ENOENT);
@@ -52,9 +54,9 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                 }
             } else {
                 // if the object is a logical object, we have to do some more stuff.
-                // sets the appropriate object and file active and returns the appropriate file-  
+                // sets the appropriate object and file active and returns the appropriate file-
                 // metadata (which is not needed at this point).
-                let _ = match prepare_zffreader_logical_file(&mut self.zffreader, *object_no, *file_no) {
+                let _ = match prepare_zffreader_logical_file(&mut zffreader, *object_no, *file_no) {
                     Err(e) => {
                         error!("Error while trying to set file {file_no} of object {object_no} active.");
                         debug!("{e}");
@@ -64,8 +66,8 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                     Ok(metadata) => metadata
                 };
             }
-            
-            match self.zffreader.seek(SeekFrom::Start(offset as u64)) {
+
+            match zffreader.seek(SeekFrom::Start(offset as u64)) {
                 Ok(_) => (),
                 Err(e) => {
                     error!("read error 0x1 for inode {ino}.");
@@ -76,7 +78,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
             }
             let mut buffer = vec![0u8; size as usize];
             debug!("Fill buffer by reading data at offset {offset} with buffer size of {size}.");
-            match self.zffreader.read(&mut buffer) {
+            match zffreader.read(&mut buffer) {
                 Ok(_) => (),
                 Err(e) => {
                     error!("read error 0x2 for inode {ino}.");
@@ -86,7 +88,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                 }
             }
             reply.data(&buffer);
-        }            
+        }
     }
 
     fn readdir(
@@ -102,7 +104,9 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
 
         // sets the . directory which is always = ino
         entries.push((ino, FileType::Directory, String::from(CURRENT_DIR)));
-        
+
+        let mut zffreader = self.zffreader.lock().unwrap();
+
         // check if we are in root - directory and list objects
         if ino == SPECIAL_INODE_ROOT_DIR {
             // sets the parent directory
@@ -120,7 +124,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
             entries.push((SPECIAL_INODE_ROOT_DIR, FileType::Directory, String::from(PARENT_DIR)));
 
             // set active object reader to appropriate inode
-            if let Err(e) = self.zffreader.set_active_object(ino-1) {
+            if let Err(e) = zffreader.set_active_object(ino-1) {
                 error!("An error occured while trying to readdir for inode {ino}: {e}");
                 reply.error(ENOENT);
                 return;
@@ -132,7 +136,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                     reply.error(ENOENT);
                     return;
                 },
-                Some(ZffReaderObjectType::Physical) => match readdir_physical_object_root(&mut self.zffreader, self.shift_value) {
+                Some(ZffReaderObjectType::Physical) => match readdir_physical_object_root(&mut zffreader, self.shift_value) {
                     Ok(mut content) => entries.append(&mut content),
                     Err(e) => {
                         error!("Error while trying to read content of object directory of object {}: {e}", ino-1);
@@ -140,7 +144,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                         return;
                     }
                 },
-                Some(ZffReaderObjectType::Logical) => match readdir_logical_object_root(&mut self.zffreader, self.shift_value) {
+                Some(ZffReaderObjectType::Logical) => match readdir_logical_object_root(&mut zffreader, self.shift_value) {
                     Ok(mut content) => entries.append(&mut content),
                     Err(e) => {
                         error!("Error while trying to read content of object directory of object {}: {e}", ino-1);
@@ -161,7 +165,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                     return;
                 }
             };
-            let filemetadata_ref = match prepare_zffreader_logical_file(&mut self.zffreader, *object_no, *file_no) {
+            let filemetadata_ref = match prepare_zffreader_logical_file(&mut zffreader, *object_no, *file_no) {
                 Ok(fm) => fm,
                 Err(e) =>  {
                     error!("An error occurred while trying to prepare zffreader: {e}");
@@ -175,13 +179,13 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
             let children = {
                 let mut buffer = Vec::new();
                 //seeks the reader to start position to read all content of the directory (again)
-                if let Err(e) = self.zffreader.rewind() {
+                if let Err(e) = zffreader.rewind() {
                     error!("Error while trying to seek the children-list of file {file_no} / object {object_no}.");
                     debug!("{e}");
                     reply.error(ENOENT);
                     return;
                 }
-                if let Err(e) = self.zffreader.read_to_end(&mut buffer) {
+                if let Err(e) = zffreader.read_to_end(&mut buffer) {
                     error!("Error while trying to read children list of file {file_no} / object {object_no}.");
                     debug!("{e}");
                     reply.error(ENOENT);
@@ -199,7 +203,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
             };
 
             //set children entries.
-            let mut children_entries = match readdir_entries_file(&mut self.zffreader, self.shift_value, &children) {
+            let mut children_entries = match readdir_entries_file(&mut zffreader, self.shift_value, &children) {
                 Ok(entries) => entries,
                 Err(e) => {
                     error!("An error occurred while reading directory of file {file_no} / object {object_no}.");
@@ -270,8 +274,9 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
             reply.entry(&TTL, file_attr, DEFAULT_ENTRY_GENERATION);
 
         } else if parent <= self.shift_value { //checks if the parent is a object folder
+            let mut zffreader = self.zffreader.lock().unwrap();
             // set active object reader to appropriate parent
-            if let Err(e) = self.zffreader.set_active_object(parent-1) {
+            if let Err(e) = zffreader.set_active_object(parent-1) {
                 error!("LOOKUP: An error occured while trying to lookup for inode {parent}.");
                 debug!("{e}");
                 reply.error(ENOENT);
@@ -285,7 +290,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                     return;
                 },
                 Some(ZffReaderObjectType::Physical) => if name == ZFF_PHYSICAL_OBJECT_NAME {
-                    let object_footer = match self.zffreader.active_object_footer() {
+                    let object_footer = match zffreader.active_object_footer() {
                         Ok(footer) => match footer { ObjectFooter::Physical(phy) => phy, _ => unreachable!() },
                         Err(e) => {
                             error!("LOOKUP: cannot find the object footer of object {}", parent-1);
@@ -373,6 +378,8 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                 }
             };
 
+            let mut zffreader = self.zffreader.lock().unwrap();
+
             //check if this is a physical object.
             // we've stored inodes to physical objects in inode map by using the file number 0 as placeholder earlier.
             if *file_no == 0 {
@@ -381,7 +388,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
             } else {
                 // if the object is a logical object, we have to do some more stuff.
                 // sets the appropriate object and file active and returns the appropriate filemetadata
-                let filemetadata = match prepare_zffreader_logical_file(&mut self.zffreader, *object_no, *file_no) {
+                let filemetadata = match prepare_zffreader_logical_file(&mut zffreader, *object_no, *file_no) {
                     Err(e) => {
                         error!("Error while trying to set file {file_no} of object {object_no} active.");
                         debug!("{e}");
@@ -397,8 +404,8 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                     reply.error(ENOENT);
                     return;
                 }
-                
-                match self.zffreader.seek(SeekFrom::Start(0)) {
+
+                match zffreader.seek(SeekFrom::Start(0)) {
                     Ok(_) => (),
                     Err(e) => {
                         error!("read error 0x3 for inode {ino}.");
@@ -408,7 +415,7 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
                     }
                 }
                 let mut buffer = Vec::new();
-                match self.zffreader.read_to_end(&mut buffer) {
+                match zffreader.read_to_end(&mut buffer) {
                     Ok(_) => (),
                     Err(e) => {
                         error!("read error 0x4 for inode {ino}.");
@@ -434,4 +441,3 @@ impl<R: Read + Seek> Filesystem for ZffFs<R> {
         }
     }
 }
-

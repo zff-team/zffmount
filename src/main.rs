@@ -16,6 +16,8 @@ mod addons;
 mod zff_core;
 #[cfg(target_family = "unix")]
 mod unix;
+#[cfg(target_family = "windows")]
+mod windows;
 
 // - internal
 use constants::*;
@@ -23,6 +25,8 @@ use addons::*;
 use zff_core::*;
 #[cfg(target_family = "unix")]
 use unix::*;
+#[cfg(target_family = "windows")]
+use windows::*;
 
 // - external
 use clap::{Parser, ValueEnum};
@@ -168,5 +172,5 @@ fn fuse<R: Read + Seek + Send + Sync + 'static>(fs: ZffFs<R>, args: &Cli) {
     #[cfg(target_family = "unix")]
     fuse_unix(fs, args);
     #[cfg(target_family = "windows")]
-    unimplemented!();
+    fuse_windows(fs, args);
 }

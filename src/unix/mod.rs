@@ -70,6 +70,7 @@ fn file_attr_of_file<R: Read + Seek>(mut filemetadata: FileMetadata, zffreader: 
     let mut zff_filetype = filemetadata.file_type;
     if zff_filetype == ZffFileType::Hardlink {
         let mut buffer = Vec::new();
+        zffreader.rewind()?;
         zffreader.read_to_end(&mut buffer)?;
         let original_filenumber = u64::decode_directly(&mut buffer.as_slice())?;
         zffreader.set_active_file(original_filenumber)?;
@@ -213,7 +214,6 @@ pub fn inode_attributes_map_add_object<R: Read + Seek>(
     shift_value: u64) -> Result<u64> {
     zffreader.set_active_object(object_number)?;
     let mut counter = 0;
-
     let object_footer = zffreader.active_object_footer()?;
     inode_attributes_map.insert(object_number+1, file_attr_of_object_footer(&object_footer));
     match object_footer {
@@ -256,6 +256,7 @@ pub fn convert_filetype<R: Read + Seek>(in_type: &ZffFileType, zffreader: &mut Z
         ZffFileType::Hardlink => unreachable!(),
         ZffFileType::SpecialFile => {
             let mut buffer = Vec::new();
+            zffreader.rewind()?;
             zffreader.read_to_end(&mut buffer)?;
             let filetype_flag = match buffer.last() {
                 Some(byte) => ZffSpecialFileType::try_from(byte)?,
@@ -298,6 +299,10 @@ pub fn readdir_entries_file<R: Read + Seek>(zffreader: &mut ZffReader<R>, shift_
     for filenumber in children {
         zffreader.set_active_file(*filenumber)?;
         let mut filemetadata = zffreader.current_filemetadata()?.clone();
+        let filename = match filemetadata.filename {
+            Some(ftype) => ftype,
+            None => zffreader.current_fileheader()?.filename
+        };
         let mut zff_filetype = filemetadata.file_type;
         if zff_filetype == ZffFileType::Hardlink {
             let mut buffer = Vec::new();
@@ -310,10 +315,6 @@ pub fn readdir_entries_file<R: Read + Seek>(zffreader: &mut ZffReader<R>, shift_
         }
         let inode = filemetadata.first_chunk_number + shift_value;
         let filetype = convert_filetype(&zff_filetype, zffreader)?;
-        let filename = match filemetadata.filename {
-            Some(ftype) => ftype,
-            None => zffreader.current_fileheader()?.filename
-        };
         entries.push((inode, filetype, filename.to_string()));
     }
 

@@ -1,6 +1,9 @@
 // - Parent
 use super::*;
 
+// - STD
+use std::sync::Mutex;
+
 #[derive(Debug)]
 pub enum PreloadChunkmapsMode {
     None,
@@ -40,7 +43,25 @@ impl From<FileAttr> for ZffFileAttr {
 
 #[cfg(target_family = "windows")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ZffFileAttr(); //TODO
+pub struct ZffFileAttr(winfsp::filesystem::FileInfo);
+
+#[cfg(target_family = "windows")]
+impl ZffFileAttr {
+    pub fn info(&self) -> &winfsp::filesystem::FileInfo {
+        &self.0
+    }
+
+    pub fn info_mut(&mut self) -> &mut winfsp::filesystem::FileInfo {
+        &mut self.0
+    }
+}
+
+#[cfg(target_family = "windows")]
+impl From<winfsp::filesystem::FileInfo> for ZffFileAttr {
+    fn from(value: winfsp::filesystem::FileInfo) -> Self {
+        Self(value)
+    }
+}
 
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -69,7 +90,7 @@ impl ZffFsCache {
 
 #[derive(Debug)]
 pub struct ZffFs<R: Read + Seek> {
-    pub zffreader: ZffReader<R>,
+    pub zffreader: Mutex<ZffReader<R>>,
     pub shift_value: u64,
     pub cache: ZffFsCache,
 }
@@ -235,7 +256,7 @@ impl<R: Read + Seek> ZffFs<R> {
         info!("ZffFs successfully initialized and can be used now.");
 
         Self {
-            zffreader,
+            zffreader: Mutex::new(zffreader),
             shift_value,
             cache,
         }
@@ -262,7 +283,8 @@ pub fn inode_reverse_map_add_object<R: Read + Seek>(
     match zffreader.active_object_footer()? {
         ObjectFooter::Logical(object_footer) => {
             for filenumber in object_footer.file_footer_segment_numbers().keys() {
-                zffreader.set_active_file(*filenumber)?;
+                let mut filenumber = *filenumber;
+                zffreader.set_active_file(filenumber)?;
 
                 let filemetadata = zffreader.current_filemetadata()?;
                 let mut inode = filemetadata.first_chunk_number + shift_value;
@@ -270,13 +292,15 @@ pub fn inode_reverse_map_add_object<R: Read + Seek>(
                 // checks if the file is a hardlink. In that case, the original file hould be added
                 if filemetadata.file_type == ZffFileType::Hardlink {
                     let mut buffer = Vec::new();
+                    zffreader.rewind()?;
                     zffreader.read_to_end(&mut buffer)?;
                     let original_filenumber = u64::decode_directly(&mut buffer.as_slice())?;
                     zffreader.set_active_file(original_filenumber)?;
                     let filemetadata = zffreader.current_filemetadata()?.clone();
                     inode = filemetadata.first_chunk_number + shift_value;
+                    filenumber = original_filenumber;
                 }
-                inode_reverse_map.insert(inode, (object_number, *filenumber));
+                inode_reverse_map.insert(inode, (object_number, filenumber));
                 counter += 1;
             }
         },
@@ -320,9 +344,10 @@ pub fn filename_lookup_table_add_object<R: Read + Seek>(
         let filemetadata = zffreader.current_filemetadata()?.clone();
         let mut inode = filemetadata.first_chunk_number + shift_value;
 
-        // checks if the file is a hardlink. In that case, the original file hould be added
+        // checks if the file is a hardlink. In that case, the original file should be added
         if filemetadata.file_type == ZffFileType::Hardlink {
             let mut buffer = Vec::new();
+            zffreader.rewind()?;
             zffreader.read_to_end(&mut buffer)?;
             let original_filenumber = u64::decode_directly(&mut buffer.as_slice())?;
             zffreader.set_active_file(original_filenumber)?;

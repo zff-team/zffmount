@@ -4,10 +4,14 @@ use super::*;
 // - modules
 #[cfg(target_family = "unix")]
 mod unix;
+#[cfg(target_family = "windows")]
+mod windows;
 
 // - re-exports
 #[cfg(target_family = "unix")]
 pub(crate) use unix::*;
+#[cfg(target_family = "windows")]
+pub(crate) use windows::*;
 
 // - errors
 pub(crate) const EXIT_STATUS_ERROR: i32 = 1;
