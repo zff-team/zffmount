@@ -14,30 +14,29 @@ publish = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "4.5.51", features = [ "derive" ] }
-zff = { version = "3.0.0-rc.5", features = [ "log" ] }
+clap = { version = "4.5.60", features = [ "derive" ] }
+zff = { path="../zff", features = [ "log" ] }
 walkdir = "2.3.2"
 time = { version = "0.3.47", features = [ "formatting" ] }
 #logging
 log = "0.4"
-env_logger = "0.11"
+env_logger = "0.11.9"
 #serialize
 serde = { version = "1.0.228", features = ["derive"] }
 hex = "0.4.3"
 toml = "0.9.8"
 dialoguer = "0.12"
-redb = "3.1.0"
+redb = "3.1.1"
 
 [target.'cfg(target_family = "unix")'.dependencies]
-nix = { version = "0.30.1", features = [ "user" ] }
-libc = "0.2.181"
+nix = { version = "0.31.1", features = [ "user" ] }
 signal-hook = "0.4.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-fuser = { version = "0.16", features = ["abi-7-40"]}
+fuser = { version = "0.17", features = ["abi-7-40"]}
 
 [target.'cfg(target_os = "macos")'.dependencies]
-fuser = { version = "0.16", features = ["libfuse"]}
+fuser = { version = "0.17", features = ["libfuse"]}
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winfsp = "0.12"
