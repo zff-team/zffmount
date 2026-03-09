@@ -33,7 +33,7 @@ use clap::{Parser, ValueEnum};
 use log::{LevelFilter, info, error, warn, debug};
 use zff::{
     Result,
-    header::{FileType as ZffFileType, SpecialFileType as ZffSpecialFileType},
+    header::{FileType as ZffFileType, SpecialFileType as ZffSpecialFileType, MetadataExtendedValue as ZffMetadataExtendedValue},
     footer::ObjectFooter,
     ValueDecoder,
     io::zffreader::{ZffReader, ObjectType as ZffReaderObjectType, FileMetadata},
@@ -42,9 +42,6 @@ use zff::{
 };
 use time::OffsetDateTime;
 use dialoguer::{theme::ColorfulTheme, Password as PasswordDialog};
-
-
-
 
 
 #[derive(Parser, Clone)]

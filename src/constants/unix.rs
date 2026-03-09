@@ -2,7 +2,7 @@
 use super::*;
 
 pub(crate) const DEFAULT_ROOT_DIR_ATTR: FileAttr = FileAttr {
-    ino: SPECIAL_INODE_ROOT_DIR,
+    ino: INodeNo(SPECIAL_INODE_ROOT_DIR),
     size: 0,
     blocks: 0,
     atime: UNIX_EPOCH, // 1970-01-01 00:00:00

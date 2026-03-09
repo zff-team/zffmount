@@ -21,23 +21,30 @@ pub struct PreloadChunkmaps {
 
 #[cfg(target_family = "unix")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ZffFileAttr(FileAttr);
-
-#[cfg(target_family = "unix")]
-impl ZffFileAttr {
-    pub fn attr(&self) -> &FileAttr {
-        &self.0
-    }
-
-    pub fn attr_mut(&mut self) -> &mut FileAttr {
-        &mut self.0
-    }
+pub struct ZffFileAttr {
+    pub fileattr: FileAttr,
+    pub xattrs: HashMap<String, ZffMetadataExtendedValue>,
 }
 
 #[cfg(target_family = "unix")]
 impl From<FileAttr> for ZffFileAttr {
     fn from(value: FileAttr) -> Self {
-        Self(value)
+        Self {
+            fileattr: value,
+            xattrs: HashMap::new(),
+        }
+    }
+}
+
+impl Into<FileAttr> for ZffFileAttr {
+    fn into(self) -> FileAttr {
+        self.fileattr
+    }
+}
+
+impl Into<HashMap<String, ZffMetadataExtendedValue>> for ZffFileAttr {
+    fn into(self) -> HashMap<String, ZffMetadataExtendedValue> {
+        self.xattrs
     }
 }
 
@@ -89,13 +96,13 @@ impl ZffFsCache {
 }
 
 #[derive(Debug)]
-pub struct ZffFs<R: Read + Seek> {
+pub struct ZffFs<R: Read + Seek + Send + Sync> {
     pub zffreader: Mutex<ZffReader<R>>,
     pub shift_value: u64,
     pub cache: ZffFsCache,
 }
 
-impl<R: Read + Seek> ZffFs<R> {
+impl<R: Read + Seek + Send + Sync> ZffFs<R> {
     pub fn new(
         inputfiles: Vec<R>, 
         decryption_passwords: &HashMap<u64, String>, 
