@@ -65,23 +65,16 @@ pub struct Cli {
     #[clap(short='l', long="log-level", value_enum, default_value="info")]
     log_level: LogLevel,
 
-    /// Disables the kernel side DAC checks (all files are accessable, even if they do not fit the
+    /// Disables the kernel side DAC checks (all files of logical objects are accessable, even if they do not fit the
     /// right ownership).
     #[clap(short='O', long="ownership-overwrite")]
     ownership_overwrite: bool,
-
-    #[cfg(target_family = "unix")]
-    /// Adds additional internal reader to improve parallel file
-    /// access a lot. This will be limited by RLIMIT_NOFILE for the
-    /// number of zff segments.
-    #[clap(short='R', long="reader-pool-size", default_value="1")]
-    reader_pool_size: usize,
 
     /// None: saves memory but the read operations are slower (default)  
     /// redb: use a fast redb database to cache (can be faster than none if using a fast NVMe drive)  
     /// in-memory: fastest option, but you need to ensure that you have enough memory.
     #[clap(short='M', long="preload-mode", value_enum, default_value="none", 
-    required_if_eq_any=[("preload_chunk_header_map", "true"), ("preload_all_chunkmaps", "true")])]
+    required_if_eq_any=[("preload_chunk_header_map", "true"), ("preload_all_maps", "true")])]
     preload_mode: PreloadMode,
 
     /// Preload the chunk header map (in memory or in redb database e.g. at a fast NVMe drive) to speed up the read operations.
@@ -102,8 +95,9 @@ pub struct Cli {
     #[clap(short='d', long="preload-deduplication-map")]
     preload_chunk_deduplication_map: bool,
 
-    /// preloads all chunkmaps (offset, size, flags) in memory or in redb database. This is the fastest option, but you need to ensure that you have enough memory.
-    #[clap(short='a', long="preload-all-chunkmaps")]
+    /// preloads all chunkmaps (offset, size, flags) in memory or in redb database. 
+    /// This is the fastest option (if using in-memory), but you need to ensure that you have enough memory.
+    #[clap(short='a', long="preload-all-maps")]
     preload_all_chunkmaps: bool,
 
     #[clap(short='r', long="redb-path", required_if_eq("preload_mode", "redb"))]
