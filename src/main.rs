@@ -33,10 +33,12 @@ use clap::{Parser, ValueEnum};
 use log::{LevelFilter, info, error, warn, debug};
 use zff::{
     Result,
+    FileMetadata,
+    FileFooterMetadata,
     header::{FileType as ZffFileType, SpecialFileType as ZffSpecialFileType, MetadataExtendedValue as ZffMetadataExtendedValue},
     footer::ObjectFooter,
     ValueDecoder,
-    io::zffreader::{ZffReader, ObjectType as ZffReaderObjectType, FileMetadata},
+    io::zffreader::{ZffReader, ObjectType as ZffReaderObjectType},
     ZffError,
     ZffErrorKind,
 };
@@ -62,6 +64,18 @@ pub struct Cli {
     /// The Loglevel
     #[clap(short='l', long="log-level", value_enum, default_value="info")]
     log_level: LogLevel,
+
+    /// Disables the kernel side DAC checks (all files are accessable, even if they do not fit the
+    /// right ownership).
+    #[clap(short='O', long="ownership-overwrite")]
+    ownership_overwrite: bool,
+
+    #[cfg(target_family = "unix")]
+    /// Adds additional internal reader to improve parallel file
+    /// access a lot. This will be limited by RLIMIT_NOFILE for the
+    /// number of zff segments.
+    #[clap(short='R', long="reader-pool-size", default_value="1")]
+    reader_pool_size: usize,
 
     /// None: saves memory but the read operations are slower (default)  
     /// redb: use a fast redb database to cache (can be faster than none if using a fast NVMe drive)  

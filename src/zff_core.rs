@@ -1,3 +1,5 @@
+use zff::PlatformString;
+
 // - Parent
 use super::*;
 
@@ -36,15 +38,15 @@ impl From<FileAttr> for ZffFileAttr {
     }
 }
 
-impl Into<FileAttr> for ZffFileAttr {
-    fn into(self) -> FileAttr {
-        self.fileattr
+impl From<ZffFileAttr> for FileAttr {
+    fn from(value: ZffFileAttr) -> Self {
+        value.fileattr
     }
 }
 
-impl Into<HashMap<String, ZffMetadataExtendedValue>> for ZffFileAttr {
-    fn into(self) -> HashMap<String, ZffMetadataExtendedValue> {
-        self.xattrs
+impl From<ZffFileAttr> for HashMap<String, ZffMetadataExtendedValue> {
+    fn from(value: ZffFileAttr) -> Self {
+        value.xattrs
     }
 }
 
@@ -75,7 +77,7 @@ impl From<winfsp::filesystem::FileInfo> for ZffFileAttr {
 pub struct ZffFsCache {
     pub object_list: BTreeMap<u64, ZffReaderObjectType>,
     pub inode_reverse_map: BTreeMap<u64, (u64, u64)>, //<Inode, (object number, file number)
-    pub filename_lookup_table: BTreeMap<String, Vec<(u64, u64)>>, //<Filename, Vec<Parent-Inode, Self-Inode>>
+    pub filename_lookup_table: BTreeMap<PlatformString, Vec<(u64, u64)>>, //<Filename, Vec<Parent-Inode, Self-Inode>>
     pub inode_attributes_map: BTreeMap<u64, ZffFileAttr>,
 }
 
@@ -83,7 +85,7 @@ impl ZffFsCache {
     fn with_data(
         object_list: BTreeMap<u64, ZffReaderObjectType>,
         inode_reverse_map: BTreeMap<u64, (u64, u64)>,
-        filename_lookup_table: BTreeMap<String, Vec<(u64, u64)>>,
+        filename_lookup_table: BTreeMap<PlatformString, Vec<(u64, u64)>>,
         inode_attributes_map: BTreeMap<u64, ZffFileAttr>) -> Self 
     {
         Self {
@@ -181,8 +183,8 @@ impl<R: Read + Seek + Send + Sync> ZffFs<R> {
                     debug!("{e}");
                     exit(EXIT_STATUS_ERROR);
                 }
-            };  
-
+            }; 
+            
             //setup inode attributes map
             match inode_attributes_map_add_object(&mut zffreader, &mut inode_attributes_map, *object_number, shift_value) {
                 Ok(noe) => debug!("{noe} entries for object {object_number} added to inode attributes map."),
@@ -271,12 +273,9 @@ impl<R: Read + Seek + Send + Sync> ZffFs<R> {
 }
 
 pub fn enter_password_dialog(obj_no: u64) -> Option<String> {
-    match PasswordDialog::with_theme(&ColorfulTheme::default())
+    PasswordDialog::with_theme(&ColorfulTheme::default())
         .with_prompt(format!("Enter the password for object {obj_no}"))
-        .interact() {
-            Ok(pw) => Some(pw),
-            Err(_) => None
-        }
+        .interact().ok()
 }
 
 // returns the number of entries which were added.
@@ -294,17 +293,17 @@ pub fn inode_reverse_map_add_object<R: Read + Seek>(
                 zffreader.set_active_file(filenumber)?;
 
                 let filemetadata = zffreader.current_filemetadata()?;
-                let mut inode = filemetadata.first_chunk_number + shift_value;
+                let mut inode = get_inode(filemetadata, shift_value);
                 
                 // checks if the file is a hardlink. In that case, the original file hould be added
-                if filemetadata.file_type == ZffFileType::Hardlink {
+                if filemetadata.header.file_type == ZffFileType::Hardlink {
                     let mut buffer = Vec::new();
                     zffreader.rewind()?;
                     zffreader.read_to_end(&mut buffer)?;
                     let original_filenumber = u64::decode_directly(&mut buffer.as_slice())?;
                     zffreader.set_active_file(original_filenumber)?;
                     let filemetadata = zffreader.current_filemetadata()?.clone();
-                    inode = filemetadata.first_chunk_number + shift_value;
+                    inode = get_inode(&filemetadata, shift_value);
                     filenumber = original_filenumber;
                 }
                 inode_reverse_map.insert(inode, (object_number, filenumber));
@@ -333,7 +332,7 @@ pub fn prepare_zffreader_logical_file<R: Read + Seek>(
 
 pub fn filename_lookup_table_add_object<R: Read + Seek>(
     zffreader: &mut ZffReader<R>, 
-    lookup_table: &mut BTreeMap<String, Vec<(u64, u64)>>, //<Filename, Vec<Parent-Inode, Self-Inode>>
+    lookup_table: &mut BTreeMap<PlatformString, Vec<(u64, u64)>>, //<Filename, Vec<Parent-Inode, Self-Inode>>
     object_number: u64, 
     shift_value: u64) -> Result<u64> {
     zffreader.set_active_object(object_number)?;
@@ -349,29 +348,26 @@ pub fn filename_lookup_table_add_object<R: Read + Seek>(
         zffreader.set_active_file(*filenumber)?;
         
         let filemetadata = zffreader.current_filemetadata()?.clone();
-        let mut inode = filemetadata.first_chunk_number + shift_value;
+        let mut inode = get_inode(&filemetadata, shift_value);
 
         // checks if the file is a hardlink. In that case, the original file should be added
-        if filemetadata.file_type == ZffFileType::Hardlink {
+        if filemetadata.header.file_type == ZffFileType::Hardlink {
             let mut buffer = Vec::new();
             zffreader.rewind()?;
             zffreader.read_to_end(&mut buffer)?;
             let original_filenumber = u64::decode_directly(&mut buffer.as_slice())?;
             zffreader.set_active_file(original_filenumber)?;
             let filemetadata = zffreader.current_filemetadata()?.clone();
-            inode = filemetadata.first_chunk_number + shift_value;
+            inode = get_inode(&filemetadata, shift_value);
         }
         //reset the to the hardlink to get the filename of the hardlink.
         zffreader.set_active_file(*filenumber)?;
 
-        let filename = match filemetadata.filename {
-            Some(fname) => fname,
-            None => zffreader.current_fileheader()?.filename
-        };
-        let parent_file_number = filemetadata.parent_file_number;
+        let filename = filemetadata.header.filename;
+        let parent_file_number = filemetadata.header.parent_file_number;
         let parent_inode = if parent_file_number>0 {
             zffreader.set_active_file(parent_file_number)?;
-            zffreader.current_filemetadata()?.first_chunk_number + shift_value
+            get_inode(zffreader.current_filemetadata()?, shift_value)
         } else {
             object_number + 1 //if the file sits in root directory.
         };
@@ -420,4 +416,12 @@ pub fn gen_preload_chunkmap(args: &Cli) -> PreloadChunkmaps {
         }
     }
     preload_chunkmaps
+}
+
+pub fn get_inode(filemetadata: &FileMetadata, shift_value: u64) -> u64 {
+    match &filemetadata.footer {
+        FileFooterMetadata::FileFooter(footer) => footer.first_chunk_number + shift_value,
+        //TODO: check if hardlink stuff looks correct.
+        FileFooterMetadata::VirtualFileFooterMetadata(_) => filemetadata.header.file_number + shift_value, 
+    }
 }

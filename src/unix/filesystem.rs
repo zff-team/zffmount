@@ -1,17 +1,21 @@
+use zff::PlatformString;
+
 // - Parent
 use super::*;
 
 impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
-    #[cfg(target_os = "linux")]
-    //TODO
-    fn init(
-        &mut self,
+    fn flush(
+        &self,
         _req: &Request,
-        config: &mut KernelConfig,
-    ) -> std::io::Result<()> {
-        config.add_capabilities(InitFlags::FUSE_PASSTHROUGH).unwrap();
-        config.set_max_stack_depth(2).unwrap();
-        Ok(())
+        _ino: INodeNo,
+        _fh: FileHandle,
+        _lock_owner: LockOwner,
+        reply: fuser::ReplyEmpty,
+    )
+    {
+        // Flush operations will be ignored: We're operating on a 
+        // RO filesystem. Writes will never be called.
+        reply.ok();
     }
 
     fn read(
@@ -64,7 +68,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                 };
             }
 
-            match zffreader.seek(SeekFrom::Start(offset as u64)) {
+            match zffreader.seek(SeekFrom::Start(offset)) {
                 Ok(_) => (),
                 Err(e) => {
                     error!("read error 0x1 for inode {ino}.");
@@ -75,16 +79,16 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
             }
             let mut buffer = vec![0u8; size as usize];
             debug!("Fill buffer by reading data at offset {offset} with buffer size of {size}.");
-            match zffreader.read(&mut buffer) {
-                Ok(_) => (),
+            let bytes_read = match zffreader.read(&mut buffer) {
+                Ok(bytes_read) => bytes_read,
                 Err(e) => {
                     error!("read error 0x2 for inode {ino}.");
                     debug!("{e}");
                     reply.error(Errno::ENOENT);
                     return
                 }
-            }
-            reply.data(&buffer);
+            };
+            reply.data(&buffer[..bytes_read]);
         }
     }
 
@@ -173,7 +177,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
             };
 
             //set parent directory entry
-            entries.push((filemetadata_ref.parent_file_number+self.shift_value, FileType::Directory, String::from(PARENT_DIR)));
+            entries.push((filemetadata_ref.header.parent_file_number+self.shift_value, FileType::Directory, String::from(PARENT_DIR)));
             let children = {
                 let mut buffer = Vec::new();
                 //seeks the reader to start position to read all content of the directory (again)
@@ -200,7 +204,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                 }
             };
 
-            //set children entries.
+            //set children entrieźs.
             let mut children_entries = match readdir_entries_file(&mut zffreader, self.shift_value, &children) {
                 Ok(entries) => entries,
                 Err(e) => {
@@ -226,6 +230,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         debug!("Starting LOOKUP request: parent inode: \"{parent}\"; name: {:?}.", name);
         let parent = parent.0;
+        let platformstring_name: PlatformString = name.into();
         let name = match name.to_str() {
             Some(name) => name,
             None => {
@@ -286,7 +291,6 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                 Some(ZffReaderObjectType::Encrypted) | None => {
                     error!("LOOKUP: Could not find undecrypted object reader for object {}", parent-1);
                     reply.error(Errno::ENOENT);
-                    return;
                 },
                 Some(ZffReaderObjectType::Physical) => if name == ZFF_PHYSICAL_OBJECT_NAME {
                     let object_footer = match zffreader.active_object_footer() {
@@ -313,9 +317,8 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                 } else {
                     debug!("Error while trying to lookup for {name} in object {}", parent-1);
                     reply.error(Errno::ENOENT);
-                    return;
                 },
-                Some(ZffReaderObjectType::Logical) => if let Some(lookup_table_entries) = self.cache.filename_lookup_table.get(name) {
+                Some(ZffReaderObjectType::Logical) => if let Some(lookup_table_entries) = self.cache.filename_lookup_table.get(&platformstring_name) {
                     for (parent_inode, inode) in lookup_table_entries {
                         if parent == *parent_inode {
                             match self.cache.inode_attributes_map.get(inode) {
@@ -335,11 +338,10 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                 } else {
                     debug!("Error while trying to lookup for {name} in object {}", parent-1);
                     reply.error(Errno::ENOENT);
-                    return;
                 }
                 Some(ZffReaderObjectType::Virtual) => todo!(), //TODO
             }
-        } else if let Some(lookup_table_entries) = self.cache.filename_lookup_table.get(name) {
+        } else if let Some(lookup_table_entries) = self.cache.filename_lookup_table.get(&platformstring_name) {
             for (parent_inode, inode) in lookup_table_entries {
                 if parent == *parent_inode {
                     match self.cache.inode_attributes_map.get(inode) {
@@ -359,7 +361,6 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
         } else {
             debug!("Error while trying to lookup for {name} in object {}", parent-1);
             reply.error(Errno::ENOENT);
-            return;
         }
     }
 
@@ -398,7 +399,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                     Ok(metadata) => metadata
                 };
 
-                if filemetadata.file_type != ZffFileType::Symlink {
+                if filemetadata.header.file_type != ZffFileType::Symlink {
                     error!("File {file_no} is not a link.");
                     debug!("{:?}", filemetadata);
                     reply.error(Errno::ENOENT);
@@ -424,7 +425,17 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                         return
                     }
                 }
-                reply.data(&buffer);
+                // we will only use the human readable lossy utf8 conversion of the platform string.
+                let ps = match PlatformString::decode_directly(&mut buffer.as_slice()) {
+                    Ok(ps) => ps.to_string_lossy(),
+                    Err(e) => {
+                        error!("read error 0x5 for inode {ino}.");
+                        debug!("{e}");
+                        reply.error(Errno::ENOENT);
+                        return
+                    }
+                };
+                reply.data(ps.as_bytes());
             }
         }
     }
@@ -502,7 +513,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                 }
             },
             None => if ino == SPECIAL_INODE_ROOT_DIR {
-                reply.data(&vec![])
+                reply.data(&[])
             } else {
                 debug!("GETXATTR: unknown inode number: {ino}");
                 reply.error(Errno::ENOENT);

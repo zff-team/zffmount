@@ -44,6 +44,9 @@ pub(crate) const ATIME: &str = "atime";
 pub(crate) const MTIME: &str = "mtime";
 pub(crate) const CTIME: &str = "ctime";
 pub(crate) const BTIME: &str = "btime";
+pub(crate) const UID: &str = "uid";
+pub(crate) const GID: &str = "gid";
+pub(crate) const PERM_MODE: &str = "mode";
 
 // - Error messages
 pub(crate) const ERR_INVALID_OBJECT_TYPE: &str = "Invalid object type";

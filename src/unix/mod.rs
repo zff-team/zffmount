@@ -7,6 +7,9 @@ use std::ffi::OsStr;
 // - Modules
 mod filesystem;
 
+// - internal
+use zff::header::MetadataExtendedValue;
+
 // - external
 pub use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry,
@@ -15,18 +18,16 @@ pub use fuser::{
 };
 pub use nix::unistd::{Uid, Gid};
 pub use signal_hook::{consts::{SIGINT, SIGHUP, SIGTERM}, iterator::Signals};
-// as far as I know, passthrough is not available for FUSE on MacOS systems.
-#[cfg(target_os = "linux")]
-pub use fuser::{
-    KernelConfig, InitFlags
-};
 
 pub fn fuse_unix<R: Read + Seek + Send + Sync + 'static>(fs: ZffFs<R>, args: &Cli) {
-    let mountoptions = vec![
-        MountOption::RO, 
+    let mut mountoptions = vec![
+        MountOption::RO,
         MountOption::FSName(String::from(ZFF_OVERLAY_FS_NAME)),
-        MountOption::DefaultPermissions,
     ];
+    if !args.ownership_overwrite {
+        mountoptions.push(MountOption::DefaultPermissions)
+    }
+
     let mut config = Config::default();
     config.mount_options = mountoptions;
 
@@ -72,21 +73,21 @@ pub fn fuse_unix<R: Read + Seek + Send + Sync + 'static>(fs: ZffFs<R>, args: &Cl
 
 
 fn file_attr_of_file<R: Read + Seek>(mut filemetadata: FileMetadata, zffreader: &mut ZffReader<R>, shift_value: u64) -> Result<ZffFileAttr> {
-    let mut zff_filetype = filemetadata.file_type;
+    let mut zff_filetype = filemetadata.header.file_type.clone();
     if zff_filetype == ZffFileType::Hardlink {
         let mut buffer = Vec::new();
         zffreader.rewind()?;
         zffreader.read_to_end(&mut buffer)?;
         let original_filenumber = u64::decode_directly(&mut buffer.as_slice())?;
         zffreader.set_active_file(original_filenumber)?;
-        filemetadata = zffreader.current_filemetadata()?.clone();
-        zff_filetype = filemetadata.file_type;
+        filemetadata = zffreader.current_filemetadata()?.clone(); //necessary to handle hardlinks correctly.
+        zff_filetype = filemetadata.header.file_type.clone();
     }
     let filetype = convert_filetype(&zff_filetype, zffreader)?;
 
     // removes the most stuff so we can then iterate over metadata_ext to obtain
     // all xattrs.
-    let atime = match filemetadata.metadata_ext.remove(ATIME) {
+    let atime = match filemetadata.header.metadata_ext.remove(ATIME) {
         Some(atime) => if let Some(atime) = atime.as_any().downcast_ref::<u64>() {
             *atime as i64
         } else {
@@ -108,7 +109,7 @@ fn file_attr_of_file<R: Read + Seek>(mut filemetadata: FileMetadata, zffreader: 
         Err(_) => UNIX_EPOCH,
     };
 
-    let mtime = match filemetadata.metadata_ext.remove(MTIME) {
+    let mtime = match filemetadata.header.metadata_ext.remove(MTIME) {
         Some(mtime) => if let Some(mtime) = mtime.as_any().downcast_ref::<u64>() {
             *mtime as i64
         } else {
@@ -128,7 +129,7 @@ fn file_attr_of_file<R: Read + Seek>(mut filemetadata: FileMetadata, zffreader: 
         Err(_) => UNIX_EPOCH,
     };
 
-    let ctime = match filemetadata.metadata_ext.remove(CTIME) {
+    let ctime = match filemetadata.header.metadata_ext.remove(CTIME) {
         Some(ctime) => if let Some(ctime) = ctime.as_any().downcast_ref::<u64>() {
             *ctime as i64
         } else {
@@ -148,7 +149,7 @@ fn file_attr_of_file<R: Read + Seek>(mut filemetadata: FileMetadata, zffreader: 
         Err(_) => UNIX_EPOCH,
     };
 
-    let btime = match filemetadata.metadata_ext.remove(BTIME) {
+    let btime = match filemetadata.header.metadata_ext.remove(BTIME) {
         Some(btime) => if let Some(btime) = btime.as_any().downcast_ref::<u64>() {
             *btime as i64
         } else {
@@ -168,26 +169,48 @@ fn file_attr_of_file<R: Read + Seek>(mut filemetadata: FileMetadata, zffreader: 
         Err(_) => UNIX_EPOCH,
     };
 
+    let ino = match &filemetadata.footer {
+        FileFooterMetadata::FileFooter(footer) => footer.first_chunk_number + shift_value,
+        //TODO: check if hardlink stuff looks correct.
+        FileFooterMetadata::VirtualFileFooterMetadata(_) => filemetadata.header.file_number + shift_value, 
+    };
+
+    let uid = if let Some(MetadataExtendedValue::U32(uid)) = filemetadata.header.metadata_ext.get(UID) {
+        *uid
+    } else {
+        Uid::effective().into()
+    };
+    let gid = if let Some(MetadataExtendedValue::U32(gid)) = filemetadata.header.metadata_ext.get(GID) {
+        *gid
+    } else {
+        Gid::effective().into()
+    };
+    let perm = if let Some(MetadataExtendedValue::U32(mode)) = filemetadata.header.metadata_ext.get(PERM_MODE) {
+        *mode as u16
+    } else {
+        0o755
+    };
+
     let fileattr = FileAttr {
-        ino: INodeNo(filemetadata.first_chunk_number + shift_value),
-        size: filemetadata.length_of_data,
-        blocks: filemetadata.length_of_data / DEFAULT_BLOCKSIZE as u64 + 1,
+        ino: INodeNo(ino),
+        size: filemetadata.length_of_data(),
+        blocks: filemetadata.length_of_data() / DEFAULT_BLOCKSIZE as u64 + 1,
         atime,
         mtime,
         ctime,
         crtime: btime,
         kind: filetype,
-        perm: 0o755,
+        perm,
         nlink: 1,
-        uid: Uid::effective().into(),
-        gid: Gid::effective().into(),
+        uid,
+        gid,
         rdev: 0,
         flags: 0,
         blksize: DEFAULT_BLOCKSIZE,
     };
 
     let mut zff_file_attr = ZffFileAttr::from(fileattr);
-    zff_file_attr.xattrs = filemetadata.metadata_ext;
+    zff_file_attr.xattrs = filemetadata.header.metadata_ext;
 
     Ok(zff_file_attr)
 }
@@ -235,7 +258,7 @@ pub fn inode_attributes_map_add_object<R: Read + Seek>(
             for filenumber in log_footer.file_footer_segment_numbers().keys() {
                 zffreader.set_active_file(*filenumber)?;
                 let metadata = zffreader.current_filemetadata()?.clone();
-                let inode = metadata.first_chunk_number + shift_value;
+                let inode = get_inode(&metadata, shift_value);
                 let file_attr = file_attr_of_file(metadata, zffreader, shift_value)?;
                 inode_attributes_map.insert(inode, file_attr);
                 counter += 1;
@@ -311,11 +334,8 @@ pub fn readdir_entries_file<R: Read + Seek>(zffreader: &mut ZffReader<R>, shift_
     for filenumber in children {
         zffreader.set_active_file(*filenumber)?;
         let mut filemetadata = zffreader.current_filemetadata()?.clone();
-        let filename = match filemetadata.filename {
-            Some(ftype) => ftype,
-            None => zffreader.current_fileheader()?.filename
-        };
-        let mut zff_filetype = filemetadata.file_type;
+        let filename = filemetadata.header.filename.clone();
+        let mut zff_filetype = filemetadata.header.file_type.clone();
         if zff_filetype == ZffFileType::Hardlink {
             let mut buffer = Vec::new();
             zffreader.rewind()?;
@@ -323,9 +343,9 @@ pub fn readdir_entries_file<R: Read + Seek>(zffreader: &mut ZffReader<R>, shift_
             let original_filenumber = u64::decode_directly(&mut buffer.as_slice())?;
             zffreader.set_active_file(original_filenumber)?;
             filemetadata = zffreader.current_filemetadata()?.clone();
-            zff_filetype = filemetadata.file_type;
+            zff_filetype = filemetadata.header.file_type.clone();
         }
-        let inode = filemetadata.first_chunk_number + shift_value;
+        let inode = get_inode(&filemetadata, shift_value);
         let filetype = convert_filetype(&zff_filetype, zffreader)?;
         entries.push((inode, filetype, filename.to_string()));
     }
