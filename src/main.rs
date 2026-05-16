@@ -23,10 +23,6 @@ mod windows;
 use constants::*;
 use addons::*;
 use zff_core::*;
-#[cfg(target_family = "unix")]
-use unix::*;
-#[cfg(target_family = "windows")]
-use windows::*;
 
 // - external
 use clap::{Parser, ValueEnum};
@@ -98,7 +94,7 @@ pub struct Cli {
     /// preloads all chunkmaps (offset, size, flags) in memory or in redb database. 
     /// This is the fastest option (if using in-memory), but you need to ensure that you have enough memory.
     #[clap(short='a', long="preload-all-maps")]
-    preload_all_chunkmaps: bool,
+    preload_all_maps: bool,
 
     #[clap(short='r', long="redb-path", required_if_eq("preload_mode", "redb"))]
     redb_path: Option<PathBuf>,
@@ -175,7 +171,7 @@ fn main() {
 
 fn fuse<R: Read + Seek + Send + Sync + 'static>(fs: ZffFs<R>, args: &Cli) {
     #[cfg(target_family = "unix")]
-    fuse_unix(fs, args);
+    unix::fuse_unix(fs, args);
     #[cfg(target_family = "windows")]
-    fuse_windows(fs, args);
+    windows::fuse_windows(fs, args);
 }

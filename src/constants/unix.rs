@@ -1,6 +1,13 @@
 // - Parent
 use super::*;
 
+// - external
+use fuser::{
+    INodeNo,
+    FileAttr,
+    FileType,
+};
+
 pub(crate) const DEFAULT_ROOT_DIR_ATTR: FileAttr = FileAttr {
     ino: INodeNo(SPECIAL_INODE_ROOT_DIR),
     size: 0,

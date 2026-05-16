@@ -57,7 +57,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                 // if the object is a logical object, we have to do some more stuff.
                 // sets the appropriate object and file active and returns the appropriate file-
                 // metadata (which is not needed at this point).
-                let _ = match prepare_zffreader_logical_file(&mut zffreader, *object_no, *file_no) {
+                let _ = match prepare_zffreader_file(&mut zffreader, *object_no, *file_no) {
                     Err(e) => {
                         error!("Error while trying to set file {file_no} of object {object_no} active.");
                         debug!("{e}");
@@ -146,7 +146,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                         return;
                     }
                 },
-                Some(ZffReaderObjectType::Logical) => match readdir_logical_object_root(&mut zffreader, self.shift_value) {
+                Some(ZffReaderObjectType::Logical) => match readdir_logical_object_root(&self.cache, &mut zffreader) {
                     Ok(mut content) => entries.append(&mut content),
                     Err(e) => {
                         error!("Error while trying to read content of object directory of object {}: {e}", ino-1);
@@ -154,9 +154,16 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                         return;
                     },
                 },
-                Some(ZffReaderObjectType::Virtual) => todo!(), //TODO
+                Some(ZffReaderObjectType::Virtual) => match readdir_virtual_object_root(&self.cache, &mut zffreader) {
+                    Ok(mut content) => entries.append(&mut content),
+                    Err(e) => {
+                        error!("Error while trying to read content of object directory of object {}: {e}", ino-1);
+                        reply.error(Errno::ENOENT);
+                        return;
+                    },
+                }
             }
-        //the following should only affect logical objects.
+        //the following should only affect logical and virtual objects.
         } else {
             // setup self ino file
             let (object_no, file_no) = match self.cache.inode_reverse_map.get(&ino) {
@@ -167,7 +174,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                     return;
                 }
             };
-            let filemetadata_ref = match prepare_zffreader_logical_file(&mut zffreader, *object_no, *file_no) {
+            let filemetadata = match prepare_zffreader_file(&mut zffreader, *object_no, *file_no) {
                 Ok(fm) => fm,
                 Err(e) =>  {
                     error!("An error occurred while trying to prepare zffreader: {e}");
@@ -175,37 +182,60 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                     return;
                 },
             };
-
-            //set parent directory entry
-            entries.push((filemetadata_ref.header.parent_file_number+self.shift_value, FileType::Directory, String::from(PARENT_DIR)));
-            let children = {
-                let mut buffer = Vec::new();
-                //seeks the reader to start position to read all content of the directory (again)
-                if let Err(e) = zffreader.rewind() {
-                    error!("Error while trying to seek the children-list of file {file_no} / object {object_no}.");
-                    debug!("{e}");
+            let parent_inode = match self.cache.inode_map.get(&(*object_no, *file_no)) {
+                Some(ino) => ino,
+                None => {
+                    error!("Unable to setup parent inode for file {file_no} of object {object_no}");
                     reply.error(Errno::ENOENT);
                     return;
-                }
-                if let Err(e) = zffreader.read_to_end(&mut buffer) {
-                    error!("Error while trying to read children list of file {file_no} / object {object_no}.");
-                    debug!("{e}");
-                    reply.error(Errno::ENOENT);
-                    return;
-                };
-                match Vec::<u64>::decode_directly(&mut buffer.as_slice()) {
-                    Ok(vec) => vec,
-                    Err(e) => {
-                        error!("An error occurred while decoding list of files of file {file_no} / object {object_no}.");
-                        debug!("{e}");
-                        reply.error(Errno::ENOENT);
-                        return;
-                    }
                 }
             };
 
-            //set children entrieźs.
-            let mut children_entries = match readdir_entries_file(&mut zffreader, self.shift_value, &children) {
+            //set parent directory entry
+            entries.push((*parent_inode, FileType::Directory, String::from(PARENT_DIR)));
+            let children = {
+                match filemetadata.footer {
+                    FileFooterMetadata::FileFooter(_) => {
+                        let mut buffer = Vec::new();
+                        //seeks the reader to start position to read all content of the directory (again)
+                        if let Err(e) = zffreader.rewind() {
+                            error!("Error while trying to seek the children-list of file {file_no} / object {object_no}.");
+                            debug!("{e}");
+                            reply.error(Errno::ENOENT);
+                            return;
+                        }
+                        if let Err(e) = zffreader.read_to_end(&mut buffer) {
+                            error!("Error while trying to read children list of file {file_no} / object {object_no}.");
+                            debug!("{e}");
+                            reply.error(Errno::ENOENT);
+                            return;
+                        };
+                        match Vec::<u64>::decode_directly(&mut buffer.as_slice()) {
+                            Ok(vec) => vec,
+                            Err(e) => {
+                                error!("An error occurred while decoding list of files of file {file_no} / object {object_no}.");
+                                debug!("{e}");
+                                reply.error(Errno::ENOENT);
+                                return;
+                            }
+                        }
+                    },
+                    FileFooterMetadata::VirtualFileFooterMetadata(ref vffc) => {
+                        match vffc.vfc {
+                            VirtualFileContent::Directory(ref children) => children.clone(),
+                            _ => {
+                                error!("Virtual file is not a directory!");
+                                reply.error(Errno::ENOENT);
+                                return;
+                            }
+                        }
+                    }
+                }
+                
+            };
+
+            //set children entries.
+            let mut children_entries = match readdir_entries_file(&self.cache, &mut zffreader, &children) {
                 Ok(entries) => entries,
                 Err(e) => {
                     error!("An error occurred while reading directory of file {file_no} / object {object_no}.");
@@ -318,7 +348,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                     debug!("Error while trying to lookup for {name} in object {}", parent-1);
                     reply.error(Errno::ENOENT);
                 },
-                Some(ZffReaderObjectType::Logical) => if let Some(lookup_table_entries) = self.cache.filename_lookup_table.get(&platformstring_name) {
+                Some(ZffReaderObjectType::Logical) | Some(ZffReaderObjectType::Virtual) => if let Some(lookup_table_entries) = self.cache.filename_lookup_table.get(&platformstring_name) {
                     for (parent_inode, inode) in lookup_table_entries {
                         if parent == *parent_inode {
                             match self.cache.inode_attributes_map.get(inode) {
@@ -339,7 +369,6 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
                     debug!("Error while trying to lookup for {name} in object {}", parent-1);
                     reply.error(Errno::ENOENT);
                 }
-                Some(ZffReaderObjectType::Virtual) => todo!(), //TODO
             }
         } else if let Some(lookup_table_entries) = self.cache.filename_lookup_table.get(&platformstring_name) {
             for (parent_inode, inode) in lookup_table_entries {
@@ -389,7 +418,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
             } else {
                 // if the object is a logical object, we have to do some more stuff.
                 // sets the appropriate object and file active and returns the appropriate filemetadata
-                let filemetadata = match prepare_zffreader_logical_file(&mut zffreader, *object_no, *file_no) {
+                let filemetadata = match prepare_zffreader_file(&mut zffreader, *object_no, *file_no) {
                     Err(e) => {
                         error!("Error while trying to set file {file_no} of object {object_no} active.");
                         debug!("{e}");
@@ -441,6 +470,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
+        debug!("getattr for inode {ino}.");
         let ino = ino.0;
         match self.cache.inode_attributes_map.get(&ino) {
             Some(zff_fileattr) => reply.attr(&TTL, &zff_fileattr.fileattr),
@@ -454,6 +484,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
     }
 
     fn listxattr(&self, _req: &Request, ino: INodeNo, size: u32, reply: fuser::ReplyXattr) {
+        debug!("listxattr for inode {ino}.");
         let ino = ino.0;
         let mut bytes = vec![];
         match self.cache.inode_attributes_map.get(&ino) {
