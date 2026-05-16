@@ -19,7 +19,6 @@ pub(crate) const EXIT_STATUS_SUCCESS: i32 = 0;
 
 // Zff Overlay FS
 pub(crate) const ZFF_OVERLAY_FS_NAME: &str = "ZffOverlayFs";
-pub(crate) const OBJECT_PREFIX: &str = "object_";
 
 // other default values
 pub(crate) const SPECIAL_INODE_ROOT_DIR: u64 = 1;

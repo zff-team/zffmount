@@ -54,6 +54,7 @@ pub struct Cli {
     mount_point: PathBuf,
 
     /// The password(s), if the file(s) are encrypted. You can use this option multiple times to enter different passwords for different objects.
+    /// If the password doesn't match or is not given, zffmount will ask interactively.
     #[clap(short='p', long="decryption-passwords", value_parser = parse_key_val::<String, String>)]
     decryption_passwords: Vec<(String, String)>,
 
@@ -65,6 +66,11 @@ pub struct Cli {
     /// right ownership).
     #[clap(short='O', long="ownership-overwrite")]
     ownership_overwrite: bool,
+
+    /// Hide passive objects. If this option is used, they will be initialized, used by virtual objects, but not directly accessable via
+    /// the fuse mount.
+    #[clap(short='H', long="hide-passive-objects")]
+    hide_passive_objects: bool,
 
     /// None: saves memory but the read operations are slower (default)  
     /// redb: use a fast redb database to cache (can be faster than none if using a fast NVMe drive)  
@@ -164,7 +170,7 @@ fn main() {
         decryption_passwords.insert(obj_no, pw.clone());
     }
 
-    let fs = ZffFs::new(inputfiles, &decryption_passwords, preload_chunkmap);
+    let fs = ZffFs::new(inputfiles, &decryption_passwords, preload_chunkmap, args.hide_passive_objects);
 
     fuse(fs, &args)
 }

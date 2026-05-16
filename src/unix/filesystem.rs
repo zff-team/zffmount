@@ -30,6 +30,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
         reply: ReplyData,
     ) {
         let ino = ino.0;
+        debug!("READ from inode: {ino} at offeset {offset} for {size} bytes");
         if ino < self.shift_value {
             unreachable!()
         } else {
@@ -133,7 +134,12 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
             }
             //check object type and use the appropriate fn
             match self.cache.object_list.get(&(ino-1)) {
-                Some(ZffReaderObjectType::Encrypted) | None => {
+                None => {
+                    warn!("READDIR: Trying to readdir in hidden passive object.");
+                    reply.error(Errno::ENOENT);
+                    return;
+                },
+                Some(ZffReaderObjectType::Encrypted) => {
                     error!("Could not find undecrypted object reader for object {}", ino-1);
                     reply.error(Errno::ENOENT);
                     return;
@@ -271,7 +277,7 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
         };
         //handle root directory with the "object_" directories.
         if parent == SPECIAL_INODE_ROOT_DIR {
-            let mut split = name.rsplit(OBJECT_PREFIX);
+            let mut split = name.rsplit(OBJECT_PATH_PREFIX);
             let object_number = match split.next() {
                 None => {
                     error!("LOOKUP: object prefix not in filename. This is an application bug. The filename is {name}");
@@ -318,7 +324,11 @@ impl<R: Read + Seek + Send + Sync + 'static> Filesystem for ZffFs<R> {
             }
             //check object type and use the appropriate fn
             match self.cache.object_list.get(&(parent-1)) {
-                Some(ZffReaderObjectType::Encrypted) | None => {
+                None => {
+                    warn!("LOOKUP: Trying to lookup for hidden passive object.");
+                    reply.error(Errno::ENOENT);
+                }
+                Some(ZffReaderObjectType::Encrypted) => {
                     error!("LOOKUP: Could not find undecrypted object reader for object {}", parent-1);
                     reply.error(Errno::ENOENT);
                 },

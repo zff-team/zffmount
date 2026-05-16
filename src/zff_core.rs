@@ -101,7 +101,8 @@ pub struct ZffFsCache {
 impl ZffFsCache {
     fn new<R: Read + Seek + Send + Sync>(
         shift_value: u64,
-        zffreader: &mut ZffReader<R>) -> Result<Self> 
+        zffreader: &mut ZffReader<R>,
+        hide_passive_objects: bool) -> Result<Self> 
     {
         // set object inodes
         let mut inode_reverse_map = BTreeMap::new();
@@ -111,7 +112,7 @@ impl ZffFsCache {
 
         let mut current_inode = shift_value + 1;
 
-        let object_list = zffreader.list_decrypted_objects();
+        let mut object_list = zffreader.list_decrypted_objects();
         for object_number in object_list.keys() {
             zffreader.set_active_object(*object_number)?;
             let object_footer = zffreader.active_object_footer()?;
@@ -238,7 +239,18 @@ impl ZffFsCache {
             };
         }
 
-        
+
+        if hide_passive_objects {
+            let obj_list_clone = object_list.clone();
+            for object_number in obj_list_clone.keys() {
+                zffreader.set_active_object(*object_number)?;
+                if zffreader.active_object_header_ref()?.flags.passive_object && 
+                inode_attributes_map.remove(&(object_number+1)).is_some() && 
+                let Some(obj_type) = object_list.remove(object_number) {
+                        info!("Object {object_number} ({obj_type}) is redacted in fuse mount.");
+                }
+            }
+        }
 
         Ok(Self {
             object_list,
@@ -261,7 +273,8 @@ impl<R: Read + Seek + Send + Sync> ZffFs<R> {
     pub fn new(
         inputfiles: Vec<R>, 
         decryption_passwords: &HashMap<u64, String>, 
-        preload_chunkmaps: PreloadChunkmaps) -> Self {
+        preload_chunkmaps: PreloadChunkmaps,
+        hide_passive_objects: bool) -> Self {
         info!("Reading segment files to create initial ZffReader.");
         let mut zffreader = match ZffReader::with_reader(inputfiles) {
             Ok(reader) => reader,
@@ -319,7 +332,7 @@ impl<R: Read + Seek + Send + Sync> ZffFs<R> {
             None => 1,
         };   
 
-        let cache = match ZffFsCache::new(shift_value, &mut zffreader) {
+        let cache = match ZffFsCache::new(shift_value, &mut zffreader, hide_passive_objects) {
             Ok(cache) => cache,
             Err(e) => {
                 error!("An error occurred while trying to initialize zff cache: {e}");
